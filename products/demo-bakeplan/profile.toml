@@ -1,0 +1,63 @@
+# Kurgusal örnek ürün paketi. Kendi ürünün için bu klasörü kopyala ya da skill'e
+# "yeni ürün paketi kur" de; kurulum sihirbazı bu dosyayı senin için doldurur.
+
+[product]
+name = "BakePlan (kurgusal örnek)"
+website = ""                       # ürün sitesi varsa buraya; product_fact kaynağı olabilir
+one_liner = "Fırın ve pastane zincirlerine günlük üretim miktarı önerisi veren yazılım."
+problem = "Şubeler sabah ne kadar üretileceğini tahminle belirliyor; akşam ya ürün çöpe gidiyor ya da öğlen raflar boşalıyor."
+language = "tr"
+
+[sender]
+name = "Örnek Kişi"
+company = "BakePlan"
+signature = "Örnek Kişi\nBakePlan"
+
+[icp]
+segments = ["3-30 şubeli fırın/pastane zincirleri"]
+geography = "Türkiye"
+exclude = ["tek şubeli işletmeler", "sanayi tipi ekmek fabrikaları"]
+
+[[icp.decision_makers]]
+segment = "fırın/pastane zinciri"
+titles = ["Kurucu", "Genel Müdür", "Üretim Müdürü", "Operasyon Müdürü"]
+
+[signals]
+# Aday bulma aşamasında kullanılacak arama kalıpları.
+job_post = ["pastane zinciri üretim planlama uzmanı ilan", "fırın \"üretim şefi\" şube iş ilanı"]
+news = ["pastane zinciri yeni şube açtı", "fırın zinciri büyüme yatırım"]
+review = ["site:sikayetvar.com pastane \"kalmamış\"", "site:sikayetvar.com fırın \"bayat\""]
+
+# Yorum kaynakları: robots.txt izinli ve kullanım şartları kontrol edilmiş siteler.
+# Şartları otomatik ya da ticari kullanımı yasaklayan siteleri `excluded` listesine ekle;
+# araç onları hiçbir yöntemle (elle eklenen dahil) kaynak olarak kabul etmez.
+[sources]
+review_sites = ["sikayetvar.com", "eksisozluk.com"]
+excluded = [
+  { domain = "yemeksepeti.com", reason = "Kullanım şartları: izinsiz ticari/reklam amaçlı kullanım yasak" },
+]
+
+[scoring]
+signal_weights = { job_post = 15, news = 10, review = 10, public_post = 8 }
+tiers = { A = 70, B = 45 }
+
+[scoring.size]
+claim_type = "branch_count"
+min = 3
+max = 30
+
+[freshness]
+# Gün cinsinden, varsayılanları ezmek için (bkz. outreach/verify.py DEFAULT_POLICY).
+job_post = 60
+review = 180
+
+[message]
+channels = ["email", "linkedin"]
+tone = "Kısa, saygılı, satış dili yok. Bir gözlem, bir soru, tek bir net istek."
+allowed_numbers = [15]             # kanıt gerektirmeyen sayılar (örn. "15 dakikalık görüşme")
+
+[message.limits.email]
+max_words = 120
+
+[message.limits.linkedin]
+max_chars = 300

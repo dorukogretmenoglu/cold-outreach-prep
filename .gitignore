@@ -1,0 +1,13 @@
+# Research runs contain third-party page snapshots and lead data: never commit.
+runs/
+
+# Real product packs stay private; only the fictional demo is public.
+products/*
+!products/demo-bakeplan/
+products/demo-bakeplan/state.json
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.domain_clock.json

@@ -27,11 +27,18 @@ def contains_quote(haystack: str, quote: str) -> bool:
 
 
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+_WORD_SCALE = re.compile(r"(\d+(?:[.,]\d+)?)\s*(bin|milyon)\b", re.I)
+_SCALE = {"bin": 1_000, "milyon": 1_000_000}
 
 
 def numbers_in(text: str) -> set[str]:
-    """Numbers normalised so that 1.500, 1,500 and 1500 compare equal."""
-    return {re.sub(r"[.,]", "", n) for n in _NUMBER.findall(text)}
+    """Numbers normalised so that 1.500, 1,500 and 1500 compare equal; "30 bin" also yields 30000."""
+    found = {re.sub(r"[.,]", "", n) for n in _NUMBER.findall(text)}
+    for num, word in _WORD_SCALE.findall(turkish_casefold(text)):
+        value = float(num.replace(",", ".")) if "," in num or (num.count(".") == 1 and len(num.split(".")[1]) != 3) \
+            else float(num.replace(".", ""))
+        found.add(str(int(value * _SCALE[word])))
+    return found
 
 
 def tokenize(text: str) -> list[str]:

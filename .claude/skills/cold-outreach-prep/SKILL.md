@@ -34,7 +34,21 @@ python -m outreach new-run --product <slug>
 python -m outreach discover --run <run>
 ```
 
-**Start with the discovery spider.** `discover` crawls the market catalog's listing pages chosen in the pack's `[discovery].listings` (e.g. complaint-site categories) and writes `runs/<run>/discovery.json`: entities (companies) with their dated items. Keep only entities that fit a segment (a caterer, a restaurant chain); drop banks, apps, public institutions, marketplaces and anything in `[icp].exclude`. For each kept entity find its official domain (WebSearch, restricted to the company name) and `add-lead` with the discovery item as the note and URL. The items are leads, not evidence; the claim comes later from the item's page.
+**Start with the discovery spider.** `discover` crawls the market catalog's listing pages chosen in the pack's `[discovery].listings` and writes `runs/<run>/discovery.json` with two parts:
+
+- `directory`: **who exists.** Companies from directory-type sources (association member lists, chain lists, franchise directories) with a size hint and, when the directory shows it, the website. Each entry has `size_in_range` against the pack's size rules (true / false / null = unknown). This is the main source of candidates.
+- `candidates`: **who has a problem.** Companies mentioned on complaint-style listings, with dated items. Complaint sites over-represent big consumer brands, hotels and public bodies, so use them for signals, not as the candidate list.
+
+Then:
+
+```bash
+python -m outreach promote --run <run>     # directory entries in range or unknown, with a website → leads
+python -m outreach screen --run <run>      # light crawl of every lead, code only: size mentions, team page, emails
+```
+
+For directory entries without a website (`promote` lists them), find the official domain with WebSearch and `add-lead`, taking the domain from a result **link**, never from the search summary text. For complaint candidates that fit a segment, do the same.
+
+Read `runs/<run>/screen.json` and select for deep research the leads whose own site confirms the segment and a size in range, preferring those with a team page or a published email. Record a parent company (e.g. a brand of a large group) as a `company_fact`: decisions for group brands are made centrally, and group-level evidence (e.g. a vendor reference for the parent) matters for exclusions. The items are leads, not evidence; claims come later from the pages themselves.
 
 Then widen with WebSearch using the profile's `[signals]` patterns (vary wording, add city/sector terms). WebSearch is US-centric: for non-US markets, run each query both unrestricted and with `allowed_domains` set to the catalog's `[search].news_domains` (plus `review_sites` for review signals), and follow the catalog's `query_tips`. Do not scrape search engines directly (Google, Bing and Yandex disallow it; DuckDuckGo serves a CAPTCHA to automated clients). For each company that plausibly fits a segment and shows a signal:
 

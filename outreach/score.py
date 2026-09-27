@@ -14,6 +14,17 @@ def relevant_people(claims: list[dict], titles: list[str]) -> list[dict]:
             and any(t in normalize(c["quote"]) for t in wanted)]
 
 
+def size_in_range(count: int | None, unit: str, profile: dict) -> bool | None:
+    """Pre-screen a directory hint against the profile's size rules. None = unknown (don't drop it)."""
+    if count is None:
+        return None
+    rules = profile.get("scoring", {}).get("size", [])
+    for rule in [rules] if isinstance(rules, dict) else rules:
+        if unit in (rule.get("units") or [rule.get("unit", "şube")]):
+            return rule.get("min", 0) <= count <= rule.get("max", float("inf"))
+    return None
+
+
 def score_lead(claims: list[dict], profile: dict, today: date) -> dict:
     cfg = profile.get("scoring", {})
     weights = cfg.get("signal_weights", DEFAULT_SIGNAL_WEIGHTS)

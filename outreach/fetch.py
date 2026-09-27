@@ -187,7 +187,7 @@ def save_manual(url: str, text: str, snap_dir: Path, method: str, excluded: list
         raise ValueError("geçerli bir URL gerekli: kaynak her zaman bir sayfaya bağlı olmalı")
     snap_dir.mkdir(parents=True, exist_ok=True)
     snap_id = _next_id(snap_dir)
-    text = text.strip()
+    text = normalize_newlines(text).strip()   # pasted text from Windows carries "\r\n"
     meta = {"id": snap_id, "url": url, "domain": _domain(url), "final_url": url, "final_domain": _domain(url),
             "fetched_at": now_iso(), "method": method, "captured_by": MANUAL_METHODS[method],
             "chars": len(text), "html_dates": {}, "ok": False}
@@ -271,14 +271,21 @@ def fetch(url: str, snap_dir: Path, expect: list[str] | None = None, min_chars: 
     return meta
 
 
+def normalize_newlines(text: str) -> str:
+    # On Windows, write_text turns "\r\n" into "\r\r\n", which read_text then reads differently,
+    # so a snapshot would fail its own hash check. Store "\n" only.
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def store_page(meta: dict, page, text: str, snap_dir: Path) -> dict:
     """Write the visible layer, the raw HTML and (if different) the hidden layer; fill integrity fields."""
     snap_id = meta["id"]
+    text = normalize_newlines(text)
     meta.update(final_url=page.url, final_domain=_domain(page.url), status=page.status, chars=len(text),
                 sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(), html_dates=extract_html_dates(page))
     (snap_dir / f"{snap_id}.txt").write_text(text, encoding="utf-8")
     (snap_dir / f"{snap_id}.html").write_text(str(page.html_content), encoding="utf-8")
-    full = _full_text(page)
+    full = normalize_newlines(_full_text(page))
     if len(full) > len(text):
         meta["full_chars"] = len(full)
         meta["full_sha256"] = hashlib.sha256(full.encode("utf-8")).hexdigest()

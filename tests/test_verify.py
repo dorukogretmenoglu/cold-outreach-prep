@@ -307,6 +307,8 @@ def test_unknown_market_fails_loudly(tmp_path, monkeypatch):
     ("https://x.com.tr/subelerimiz/ornek-marka/kadikoy", "branches"),
     ("https://x.com.tr/organizasyon-yapisi", "team"),
     ("https://x.com.tr/organizasyon-ve-davet-yemekleri", None),
+    ("https://x.com.tr/Info/cerez-uyari-yonetim-paneli", None),
+    ("https://x.com.tr/kvkk-aydinlatma-metni", None),
     ("https://x.com.tr/kariyer", "careers"),
     ("https://x.com.tr/iletisim", "contact"),
     ("https://x.com.tr/menu/pizza", None),
@@ -350,6 +352,23 @@ def test_spiders_never_retry_blocked_requests_and_obey_robots():
     assert base.max_blocked_retries == 0 and base.robots_txt_obey is True
 
 
+def test_windows_line_endings_do_not_break_snapshot_hash(tmp_path):
+    from outreach.fetch import save_manual
+    meta = save_manual("https://x.com/a", "Şube listesi\r\nTürkiye genelinde 14 şubemizle\r\nhizmet", tmp_path, "manual")
+    c = claim(type="review", snapshot=meta["id"], statement="x", quote="Türkiye genelinde 14 şubemizle",
+              content_date="2026-09-27", date_evidence="bugün")
+    errors = check(tmp_path, c)
+    assert not any("değiştirilmiş" in e for e in errors)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("30 bin kişi kapasiteli", "30000"), ("2,5 milyon öğün", "2500000"), ("12.000 yemek", "12000"),
+])
+def test_numbers_in_reads_turkish_scale_words(text, expected):
+    from outreach.textnorm import numbers_in
+    assert expected in numbers_in(text)
+
+
 def test_stdin_payload_is_read_as_utf8(monkeypatch):
     import io
     import types
@@ -363,6 +382,45 @@ def test_joined_quote_from_separate_parts_is_rejected(tmp_path):
     make_snapshot(tmp_path)
     joined = claim(type="company_fact", statement="x", quote="Acme Lokanta Kurumsal Genel Müdür: Ayşe Yılmaz")
     assert any("birebir geçmiyor" in e for e in check(tmp_path, joined))
+
+
+def test_directory_entry_from_blocks_table_and_profile():
+    from scrapling.parser import Selector
+    from outreach.crawl import directory_entry
+    block = Selector('<div><h4>Örnek Yemek A</h4><p>Tesisimiz 12.000 yemek/gün kapasiteye sahiptir. '
+                     '<strong>Adres:</strong> Bursa www.ornekyemek-a.com</p></div>')
+    lst = {"id": "b", "unit": "günlük öğün", "name_css": ["h4", "p strong"],
+           "count_regex": r"([\d.]+)\s*(?:yemek|öğün)\s*/\s*gün",
+           "website_regex": r"((?:https?://|www\.)[\w.-]+\.[a-z]{2,})"}
+    e = directory_entry(block, lst, "u")
+    assert (e["entity"], e["count"], e["domain"]) == ("Örnek Yemek A", 12000, "ornekyemek-a.com")
+    no_name = Selector('<div><p><strong>Adres:</strong> x</p></div>')
+    assert directory_entry(no_name, lst, "u") is None                     # a label is not a name
+    row = Selector('<table><tr><td>Örnek Muhallebici [ 3 ]</td><td>x</td><td>21 [ 3 ]</td></tr></table>')
+    e = directory_entry(row.css("tr")[0], {"id": "w", "name_css": "td:nth-child(1)", "count_css": "td:nth-child(3)"}, "u")
+    assert (e["entity"], e["count"]) == ("Örnek Muhallebici", 21)
+    profile = Selector('<body>Marka Adı: ÖRNEK DÖNER Adres: İstanbul Yurtiçi Şube Sayısı: 11 İnternet Sitesi http://www.ornekdoner.com</body>')
+    e = directory_entry(profile, {"id": "u", "name_regex": r"Marka Adı:\s*(.+?)\s+Adres:",
+                                  "count_regex": r"Yurtiçi Şube Sayısı\s*:\s*([\d.]+)",
+                                  "website_regex": r"İnternet Sitesi\s+((?:https?://)?[\w.-]+\.[a-z]{2,})"}, "u")
+    assert (e["entity"], e["count"], e["domain"]) == ("ÖRNEK DÖNER", 11, "ornekdoner.com")
+
+
+@pytest.mark.parametrize("raw,ok", [("21", True), ("12.000", True), ("2024", False), ("1998", False), ("06", False)])
+def test_screen_size_hint_filter(raw, ok):
+    from outreach.__main__ import _plausible_size
+    assert _plausible_size(raw) is ok
+
+
+def test_size_in_range_prescreen():
+    from outreach.score import size_in_range
+    profile = {"scoring": {"size": [{"units": ["şube", "restoran"], "min": 5, "max": 60},
+                                    {"unit": "günlük öğün", "min": 2000, "max": 200000}]}}
+    assert size_in_range(21, "restoran", profile) is True
+    assert size_in_range(300, "restoran", profile) is False
+    assert size_in_range(12000, "günlük öğün", profile) is True
+    assert size_in_range(None, "şube", profile) is None
+    assert size_in_range(10, "firma", profile) is None
 
 
 # ---------- drafts ----------

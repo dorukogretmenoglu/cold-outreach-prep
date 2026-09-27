@@ -22,6 +22,8 @@ def _source_line(n: int, claim: dict, snap_dirs: list[Path]) -> str:
                 if meta.get("captured_by"):
                     where += f" [{meta['captured_by']}]"
                 break
+    if claim.get("layer") == "hidden":
+        where += " [sayfanın gizli bölümünden: sekme/akordeon/kaydırmalı alan]"
     dates = f"çekildi {fetched}" if fetched else "kendi dokümanın"
     if claim.get("content_date"):
         dates += f", içerik tarihi {claim['content_date']}"
@@ -75,7 +77,9 @@ def build(leads: list[dict], claims: list[dict], kb_claims: list[dict], drafts: 
         sources = [_source_line(numbering[cid], by_id[cid], snap_dirs) for cid in order if cid in by_id]
 
         signals = [f"• {c['statement']}" for c in lead_claims if c.get("signal") and c.get("signal") != "segment"]
-        people = [c["statement"] for c in lead_claims if c["type"] == "person_title"]
+        relevant = set(s.get("relevant_people", []))
+        people = sorted((c for c in lead_claims if c["type"] == "person_title"), key=lambda c: c["id"] not in relevant)
+        people = [("★ İlgili ünvan: " if c["id"] in relevant else "") + c["statement"] for c in people]
         row = {
             "Öncelik": s.get("tier", ""),
             "Skor": s.get("score", ""),

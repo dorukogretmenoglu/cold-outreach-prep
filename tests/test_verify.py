@@ -19,7 +19,7 @@ Türkiye genelinde 14 şubemizle hizmet veriyoruz.
 Kariyer: Maliyet Kontrol Uzmanı arıyoruz. İlan tarihi: 12 Eylül 2026
 Genel Müdür: Ayşe Yılmaz
 İletişim: info@acme-lokanta.com.tr
-Fiyatlar From CHF349 /month
+Fiyatlar From EUR99 /month
 Yorum: yemekler çok çabuk tükendi, akşam gittik yok dediler. 3 hafta önce"""
 
 
@@ -72,7 +72,7 @@ def test_statement_cannot_add_numbers_missing_from_quote(tmp_path):
 
 def test_price_keeps_from_nuance_via_quote(tmp_path):
     make_snapshot(tmp_path)
-    ok = claim(type="price", statement="Fiyat 349 CHF/ay'dan başlıyor", quote="From CHF349 /month")
+    ok = claim(type="price", statement="Fiyat 99 EUR/ay'dan başlıyor", quote="From EUR99 /month")
     assert check(tmp_path, ok) == []
 
 
@@ -116,7 +116,7 @@ def test_lookalike_domain_is_not_official(tmp_path):
 
 def test_old_snapshot_rejected_for_current_price(tmp_path):
     make_snapshot(tmp_path, fetched_at="2026-08-01T10:00:00+00:00")
-    c = claim(type="price", statement="349 CHF'den başlıyor", quote="From CHF349 /month")
+    c = claim(type="price", statement="99 EUR'den başlıyor", quote="From EUR99 /month")
     assert any("yeniden çek" in e for e in check(tmp_path, c))
 
 
@@ -214,6 +214,19 @@ def test_manual_snapshot_requires_url(tmp_path):
         save_manual("bir yerden kopyaladım", "metin metin metin metin metin", tmp_path, "manual")
 
 
+@pytest.mark.parametrize("status,text,challenged", [
+    (202, "Unfortunately, bots use DuckDuckGo too. Please complete the following challenge to confirm this search was made by a human.", True),
+    (403, "Forbidden", True),
+    (429, "Too many requests", True),
+    (200, "Checking your browser before accessing the site", True),
+    (200, "Pricing From EUR99 /month", False),
+    (200, "Bu yazıda captcha nedir anlatıyoruz. " + "uzun makale metni " * 400, False),
+])
+def test_bot_challenge_detection(status, text, challenged):
+    from outreach.fetch import bot_challenge
+    assert bot_challenge(status, text) is challenged
+
+
 @pytest.mark.parametrize("status,text,allowed", [
     (None, "", False),                                   # unreachable -> assume disallow (RFC 9309)
     (503, "", False),                                    # server error -> disallow
@@ -243,6 +256,113 @@ def test_retracted_claim_is_not_reverified_and_cannot_be_cited(tmp_path, monkeyp
     errors = cli._check({"lead": "acme", "channel": "linkedin", "body": "x [c001]"},
                         config.read_jsonl(tmp_path / "r1" / "claims.jsonl"), [], {})
     assert any("doğrulanmış" in e for e in errors)
+
+
+def test_quote_only_in_hidden_layer_passes_but_is_flagged(tmp_path):
+    make_snapshot(tmp_path, text="Pricing\nFrom EUR99 /month")
+    full = "Pricing\nFrom EUR99 /month\nReal results\nÖrnek Otel Bodrum 26% Food waste reduction"
+    meta = json.loads((tmp_path / "s001.json").read_text(encoding="utf-8"))
+    meta["full_sha256"] = hashlib.sha256(full.encode()).hexdigest()
+    (tmp_path / "s001.json").write_text(json.dumps(meta), encoding="utf-8")
+    (tmp_path / "s001.full.txt").write_text(full, encoding="utf-8")
+    c = claim(type="company_fact", statement="Örnek Otel Bodrum'da israf %26 azaldı",
+              quote="Örnek Otel Bodrum 26% Food waste reduction")
+    assert check(tmp_path, c) == [] and c["layer"] == "hidden"
+    visible = claim(type="price", statement="99 EUR'den", quote="From EUR99 /month")
+    assert check(tmp_path, visible) == [] and "layer" not in visible
+    (tmp_path / "s001.full.txt").write_text(full + "\n90% reduction", encoding="utf-8")
+    assert any("gizli katmanı" in e for e in check(tmp_path, dict(c)))
+
+
+def test_market_catalog_exclusions_always_apply(tmp_path, monkeypatch):
+    from outreach import config
+    (tmp_path / "markets").mkdir()
+    (tmp_path / "markets" / "tr.toml").write_text(
+        'country = "TR"\n[sources]\nreview_sites = ["sikayetvar.com"]\n'
+        'excluded = [{ domain = "kariyer.net", reason = "şartlar" }]\n', encoding="utf-8")
+    pack = tmp_path / "products" / "p"
+    pack.mkdir(parents=True)
+    (pack / "profile.toml").write_text(
+        '[market]\ncountry = "TR"\n[sources]\nexcluded = [{ domain = "ornek.com", reason = "paket" }]\n',
+        encoding="utf-8")
+    monkeypatch.setattr(config, "MARKETS", tmp_path / "markets")
+    monkeypatch.setattr(config, "PRODUCTS", tmp_path / "products")
+    profile = config.load_profile("p")
+    assert {e["domain"] for e in profile["sources"]["excluded"]} == {"ornek.com", "kariyer.net"}
+    assert profile["sources"]["review_sites"] == ["sikayetvar.com"]
+
+
+def test_unknown_market_fails_loudly(tmp_path, monkeypatch):
+    from outreach import config
+    monkeypatch.setattr(config, "MARKETS", tmp_path)
+    with pytest.raises(SystemExit):
+        config.load_market("DE")
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://x.com.tr/hakkimizda", "about"),
+    ("https://x.com.tr/en/about-us", "about"),
+    ("https://x.com.tr/blog/galataport-kurumsal-ziyafetler", "press"),
+    ("https://x.com.tr/subelerimiz", "branches"),
+    ("https://x.com.tr/subelerimiz/ornek-marka/kadikoy", "branches"),
+    ("https://x.com.tr/organizasyon-yapisi", "team"),
+    ("https://x.com.tr/organizasyon-ve-davet-yemekleri", None),
+    ("https://x.com.tr/kariyer", "careers"),
+    ("https://x.com.tr/iletisim", "contact"),
+    ("https://x.com.tr/menu/pizza", None),
+])
+def test_crawl_classify(url, expected):
+    from outreach.crawl import classify
+    assert classify(url) == expected
+
+
+def test_pick_urls_prefers_index_pages_newest_press_and_own_domain():
+    from outreach.crawl import pick_urls
+    entries = [
+        ("https://x.com/subelerimiz/a/b", ""), ("https://x.com/subelerimiz", ""),
+        ("https://x.com/blog/eski", "2023-01-01"), ("https://x.com/blog/yeni", "2026-09-01"),
+        ("https://x.com/blog", "2020-01-01"), ("https://baska.com/hakkimizda", ""),
+    ]
+    picked = pick_urls(entries, "x.com", 10)
+    urls = [u for u, _ in picked]
+    assert urls.index("https://x.com/subelerimiz") < urls.index("https://x.com/subelerimiz/a/b")
+    press = [u for u, t in picked if t == "press"]
+    assert press == ["https://x.com/blog", "https://x.com/blog/yeni", "https://x.com/blog/eski"]
+    assert "https://baska.com/hakkimizda" not in urls
+
+
+def test_parse_sitemap_index_and_urlset():
+    from outreach.crawl import parse_sitemap
+    idx = "<sitemapindex><sitemap><loc> https://x.com/s1.xml </loc></sitemap></sitemapindex>"
+    assert parse_sitemap(idx) == ([], ["https://x.com/s1.xml"])
+    urlset = "<urlset><url><loc>https://x.com/a</loc><lastmod>2026-09-01</lastmod></url><url><loc>https://x.com/b</loc></url></urlset>"
+    assert parse_sitemap(urlset)[0] == [("https://x.com/a", "2026-09-01"), ("https://x.com/b", "")]
+
+
+def test_fetch_chain_has_no_stealth_step():
+    from outreach.fetch import _methods
+    assert [name for name, _ in _methods(None)] == ["http", "browser"]
+
+
+def test_spiders_never_retry_blocked_requests_and_obey_robots():
+    from outreach.crawl import _base_spider
+    base = _base_spider()
+    assert base.max_blocked_retries == 0 and base.robots_txt_obey is True
+
+
+def test_stdin_payload_is_read_as_utf8(monkeypatch):
+    import io
+    import types
+    import outreach.__main__ as cli
+    raw = '{"statement": "Işık şube ğüşiöç"}'.encode("utf-8")
+    monkeypatch.setattr(cli.sys, "stdin", types.SimpleNamespace(buffer=io.BytesIO(raw)))
+    assert cli._payload(types.SimpleNamespace(stdin=True, json=None))["statement"] == "Işık şube ğüşiöç"
+
+
+def test_joined_quote_from_separate_parts_is_rejected(tmp_path):
+    make_snapshot(tmp_path)
+    joined = claim(type="company_fact", statement="x", quote="Acme Lokanta Kurumsal Genel Müdür: Ayşe Yılmaz")
+    assert any("birebir geçmiyor" in e for e in check(tmp_path, joined))
 
 
 # ---------- drafts ----------
@@ -337,7 +457,7 @@ def test_parse_date_quote(quote, expected):
 
 
 def test_kb_search_handles_turkish_suffixes():
-    kb = [{"id": "k001", "statement": "Marriott Zürih israfı azalttı", "quote": "reduced food waste by 26%"},
+    kb = [{"id": "k001", "statement": "Örnek Otel Bodrum israfı azalttı", "quote": "reduced food waste by 26%"},
           {"id": "k002", "statement": "Fiyatlandırma tasarrufun yüzdesi", "quote": "..."}]
     hits = search(kb, "israfın azaltılması")
     assert hits and hits[0][1]["id"] == "k001"
@@ -360,6 +480,23 @@ def test_size_rules_match_by_unit():
     assert score_lead(catering, profile, TODAY)["breakdown"]["uyum"] == 15
     s = score_lead(chain_too_big, profile, TODAY)
     assert s["breakdown"]["uyum"] == 0 and any("aralığın dışında" in n for n in s["notes"])
+
+
+def test_relevant_title_signal_uses_verified_quote_not_paraphrase():
+    profile = {"scoring": {"relevant_titles": ["Maliyet Kontrol"],
+                           "signal_weights": {"job_post": 15, "title": 15}}}
+    real = {"id": "c1", "type": "person_title", "statement": "Sinan Bey", "quote": "Deniz Aksoy\nMALİYET KONTROL Müdürü"}
+    only_in_statement = {"id": "c2", "type": "person_title", "statement": "Ali, maliyet kontrol müdürü",
+                         "quote": "Ali Veli\nGenel Müdür"}
+    s = score_lead([real], profile, TODAY)
+    assert s["breakdown"]["sinyal"] == 15 and s["relevant_people"] == ["c1"]
+    assert score_lead([only_in_statement], profile, TODAY)["breakdown"]["sinyal"] == 0
+
+
+def test_title_signal_off_when_weight_missing():
+    profile = {"scoring": {"relevant_titles": ["maliyet kontrol"], "signal_weights": {"job_post": 15}}}
+    c = {"id": "c1", "type": "person_title", "statement": "x", "quote": "Maliyet Kontrol Müdürü"}
+    assert score_lead([c], profile, TODAY)["breakdown"]["sinyal"] == 0
 
 
 def test_disqualifier_eliminates_lead():

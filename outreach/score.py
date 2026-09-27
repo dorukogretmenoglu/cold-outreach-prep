@@ -2,8 +2,16 @@
 from datetime import date
 
 from .dates import parse_iso
+from .textnorm import normalize
 
-DEFAULT_SIGNAL_WEIGHTS = {"job_post": 15, "news": 10, "review": 10, "public_post": 8}
+DEFAULT_SIGNAL_WEIGHTS = {"job_post": 15, "news": 10, "review": 10, "public_post": 8, "title": 15}
+
+
+def relevant_people(claims: list[dict], titles: list[str]) -> list[dict]:
+    """person_title claims whose verified quote (not the paraphrase) contains a relevant title."""
+    wanted = [normalize(t) for t in titles if t.strip()]
+    return [c for c in claims if c["type"] == "person_title"
+            and any(t in normalize(c["quote"]) for t in wanted)]
 
 
 def score_lead(claims: list[dict], profile: dict, today: date) -> dict:
@@ -46,7 +54,11 @@ def score_lead(claims: list[dict], profile: dict, today: date) -> dict:
     by_signal = {}
     for c in signal_claims:
         by_signal.setdefault(c["signal"], c)
-    signal = min(35, sum(weights[s] for s in by_signal))
+    signal_points = sum(weights[s] for s in by_signal)
+    people = relevant_people(claims, cfg.get("relevant_titles", []))
+    if people and "title" in weights:
+        signal_points += weights["title"]
+    signal = min(35, signal_points)
 
     timing, why_now = 0, ""
     dated = [(parse_iso(c.get("content_date")), c) for c in signal_claims]
@@ -69,4 +81,5 @@ def score_lead(claims: list[dict], profile: dict, today: date) -> dict:
     tiers = cfg.get("tiers", {"A": 70, "B": 45})
     tier = "A" if total >= tiers["A"] else "B" if total >= tiers["B"] else "C"
     return {"score": total, "tier": tier, "why_now": why_now, "notes": notes,
+            "relevant_people": [c["id"] for c in people],
             "breakdown": {"uyum": fit, "sinyal": signal, "zamanlama": timing, "ulaşılabilirlik": reach}}

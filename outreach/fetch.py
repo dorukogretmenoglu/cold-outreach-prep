@@ -88,6 +88,18 @@ def _visible_text(page) -> str:
     return "".join(Convertor._extract_content(page, "text", main_content_only=True)).strip()
 
 
+def _full_text(page) -> str:
+    """Text including CSS-hidden elements: tabs, accordions (FAQ) and carousels are hidden until clicked.
+
+    Kept separately so claims can cite it, but flagged, because hidden text is also where
+    SEO stuffing and prompt injection live.
+    """
+    from scrapling.core.shell import Convertor
+
+    body = page.css("body").first or page
+    return "".join(Convertor._extract_content(Convertor._strip_noise_tags(body), "text")).strip()
+
+
 def _walk_json(node, found: dict) -> None:
     if isinstance(node, dict):
         for key, value in node.items():
@@ -118,14 +130,28 @@ def extract_html_dates(page) -> dict[str, list[str]]:
 
 
 def _methods(chrome: str | None):
-    from scrapling.fetchers import DynamicFetcher, Fetcher, StealthyFetcher
+    """Plain HTTP, then a real browser for JS-rendered pages. Deliberately no stealth/anti-detection
+    step: a site that challenges or blocks automated clients is recorded as unreachable, not evaded."""
+    from scrapling.fetchers import DynamicFetcher, Fetcher
 
     browser_kw = {"real_chrome": True} if chrome else {}
     yield "http", lambda url: Fetcher.get(url, timeout=30)
     yield "browser", lambda url: DynamicFetcher.fetch(
         url, network_idle=True, block_ads=True, timeout=45000, **browser_kw)
-    yield "stealth", lambda url: StealthyFetcher.fetch(
-        url, network_idle=True, block_ads=True, timeout=60000, **browser_kw)
+
+
+_CHALLENGE_MARKERS = (
+    "captcha", "are you a robot", "are you human", "made by a human", "verify you are human",
+    "checking your browser", "cf-challenge", "robot olmadığınızı", "insan olduğunuzu doğrula",
+)
+
+
+def bot_challenge(status: int, text: str) -> bool:
+    """True when the site is telling automated clients to go away (challenge page or block status)."""
+    if status in (403, 429):
+        return True
+    t = text.lower()
+    return len(t) < 3000 and any(m in t for m in _CHALLENGE_MARKERS)
 
 
 def _next_id(snap_dir: Path) -> str:
@@ -214,8 +240,9 @@ def fetch(url: str, snap_dir: Path, expect: list[str] | None = None, min_chars: 
             meta["attempts"].append(attempt)
             continue
         text = _visible_text(page)
-        text_norm = normalize(text)
-        missing = [e for e in expect_norm if e not in text_norm]
+        # A term sitting in a tab/accordion is still on the page: escalating the fetcher won't reveal it.
+        searchable = normalize(text + "\n" + _full_text(page)) if expect_norm else ""
+        missing = [e for e in expect_norm if e not in searchable]
         attempt.update(status=page.status, chars=len(text), missing_expected=missing)
         meta["attempts"].append(attempt)
         good_status = 200 <= page.status < 300
@@ -225,6 +252,10 @@ def fetch(url: str, snap_dir: Path, expect: list[str] | None = None, min_chars: 
         if page.status in (404, 410):
             meta["error"] = f"sayfa yok ({page.status})"
             break
+        if bot_challenge(page.status, text):
+            meta["error"] = "site otomatik erişimi engelliyor (bot kontrolü); atlatılmaz, erişilemedi sayılır"
+            best = None
+            break
         if good_status and len(text) >= min_chars and not missing:
             break
 
@@ -233,15 +264,23 @@ def fetch(url: str, snap_dir: Path, expect: list[str] | None = None, min_chars: 
         meta["ok"] = good_status and len(text) >= USABLE_CHARS
         meta["method"] = name
         meta["missing_expected"] = missing
-        meta["final_url"] = page.url
-        meta["final_domain"] = _domain(page.url)
-        meta["status"] = page.status
-        meta["chars"] = len(text)
-        meta["sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        meta["html_dates"] = extract_html_dates(page)
-        (snap_dir / f"{snap_id}.txt").write_text(text, encoding="utf-8")
-        (snap_dir / f"{snap_id}.html").write_text(str(page.html_content), encoding="utf-8")
+        store_page(meta, page, text, snap_dir)
     if not meta["ok"] and "error" not in meta:
         meta["error"] = "yeterli içerik alınamadı"
     write_json(snap_dir / f"{snap_id}.json", meta)
+    return meta
+
+
+def store_page(meta: dict, page, text: str, snap_dir: Path) -> dict:
+    """Write the visible layer, the raw HTML and (if different) the hidden layer; fill integrity fields."""
+    snap_id = meta["id"]
+    meta.update(final_url=page.url, final_domain=_domain(page.url), status=page.status, chars=len(text),
+                sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(), html_dates=extract_html_dates(page))
+    (snap_dir / f"{snap_id}.txt").write_text(text, encoding="utf-8")
+    (snap_dir / f"{snap_id}.html").write_text(str(page.html_content), encoding="utf-8")
+    full = _full_text(page)
+    if len(full) > len(text):
+        meta["full_chars"] = len(full)
+        meta["full_sha256"] = hashlib.sha256(full.encode("utf-8")).hexdigest()
+        (snap_dir / f"{snap_id}.full.txt").write_text(full, encoding="utf-8")
     return meta

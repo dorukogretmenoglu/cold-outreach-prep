@@ -47,6 +47,15 @@ class Source:
     text: str
     kind: str                      # "snapshot" | "file"
     meta: dict = field(default_factory=dict)
+    full_text: str = ""            # includes CSS-hidden elements (tabs, accordions); may be empty
+
+    def locate(self, quote: str) -> str | None:
+        """'visible', 'hidden' (only in tabs/accordions/carousels) or None."""
+        if contains_quote(self.text, quote):
+            return "visible"
+        if self.full_text and contains_quote(self.full_text, quote):
+            return "hidden"
+        return None
 
     @property
     def domain(self) -> str:
@@ -76,7 +85,13 @@ def load_source(claim: dict, snap_dir: Path) -> tuple[Source | None, str | None]
         text = text_path.read_text(encoding="utf-8")
         if hashlib.sha256(text.encode("utf-8")).hexdigest() != meta.get("sha256"):
             return None, f"snapshot {sid} çekimden sonra değiştirilmiş"
-        return Source(text, "snapshot", meta), None
+        full = ""
+        full_path = snap_dir / f"{sid}.full.txt"
+        if meta.get("full_sha256") and full_path.exists():
+            full = full_path.read_text(encoding="utf-8")
+            if hashlib.sha256(full.encode("utf-8")).hexdigest() != meta["full_sha256"]:
+                return None, f"snapshot {sid} gizli katmanı çekimden sonra değiştirilmiş"
+        return Source(text, "snapshot", meta, full), None
     if claim.get("file"):
         path = (ROOT / claim["file"]).resolve()
         if ROOT not in path.parents:
@@ -104,7 +119,7 @@ def _check_date(claim: dict, src: Source, rule: dict, today: date) -> list[str]:
         if claimed not in {parse_iso(v) for v in values}:
             errors.append(f"sayfanın {key} tarihleri {values[:3]} içinde {claimed} yok")
     else:
-        if not contains_quote(src.text, evidence):
+        if src.locate(evidence) is None:
             errors.append("tarih alıntısı sayfada birebir geçmiyor")
         reference = src.fetched_on or today
         parsed = parse_date_quote(evidence, reference)
@@ -142,8 +157,13 @@ def verify_claim(claim: dict, snap_dir: Path, policy: dict, today: date,
     src, err = load_source(claim, snap_dir)
     if err:
         return [err]
-    if not contains_quote(src.text, quote):
+    layer = src.locate(quote)
+    if layer is None:
         errors.append("alıntı kaynakta birebir geçmiyor")
+    elif layer == "hidden":
+        claim["layer"] = "hidden"
+    else:
+        claim.pop("layer", None)
     for rule_ in excluded or []:
         d = rule_["domain"].lower().removeprefix("www.")
         if src.kind == "snapshot" and _same_site(src.domain, d):

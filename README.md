@@ -14,7 +14,8 @@ with `200 OK` and the model fills the gap from memory; search snippets are stale
 
 | Failure | Guard |
 |---|---|
-| Empty JS page treated as success | Fetch chain `http → real browser → stealth browser`, escalates on thin text or missing expected terms |
+| Empty JS page treated as success | Fetch chain `http → real browser`, escalates on thin text or missing expected terms |
+| Site blocks automated clients | CAPTCHA / challenge pages and 403/429 are recorded as unreachable; no stealth or anti-detection mode is used |
 | Fact filled from memory/snippet | A claim needs a verbatim quote found in a saved snapshot (checked by code, whitespace/case/Turkish-İ aware) |
 | Snapshot edited after the fact | SHA-256 of every snapshot is checked |
 | Stale information | Per-type age limits; dates must be proven by a date quote or page metadata |
@@ -29,13 +30,23 @@ Unknown stays empty. A lead with no verified decision maker is exported with tha
 
 ```
 product pack ─┐
-              ├─ 1. discovery: web search on signal patterns → 15-20 candidates → you pick
-              ├─ 2. research: fetch pages → quote-backed claims (verified on write)
+              ├─ 1. discovery: discovery spider over the market's listing pages + web search → candidates
+              ├─ 2. research: site spider maps each lead (sitemap/links) → snapshots → quote-backed claims
               ├─ 3. score: fit · signal · timing · reach, from verified claims only
               ├─ 4. draft: every fact cites [cNNN] lead evidence or [kNNN] product knowledge
               ├─ 5. verify: code checks + blind verifier agent
               └─ 6. export: Google Sheet (or CSV) + review files with sources + Gmail drafts on request
 ```
+
+Scrapling spiders do the legwork: `discover` walks listing pages declared in the market catalog (e.g.
+complaint-site categories) and groups dated items by company; `crawl` maps a lead's own site from its
+sitemap (or internal links), picks the evidence-bearing pages and renders JS pages in a real browser.
+Both obey robots.txt, throttle per domain and never retry or evade a block.
+
+A **market catalog** (`markets/<country>.toml`) holds what differs by country: which review sites,
+job boards and registries may be used (robots.txt and terms of use checked, with dates and reasons),
+which are excluded for every method, local news domains to focus the US-centric web search on, and
+query tips for the local language. `markets/tr.toml` covers Türkiye.
 
 A **product pack** (`products/<slug>/`) holds everything product-specific: `profile.toml`
 (segments, decision-maker titles, signal search patterns, exclusions, scoring, message rules), your

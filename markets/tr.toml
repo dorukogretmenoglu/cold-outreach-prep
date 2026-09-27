@@ -1,0 +1,79 @@
+# Türkiye kaynak kataloğu. Bir ürün paketi `[market] country = "TR"` dediğinde yüklenir;
+# `excluded` ve `review_sites` pakete otomatik eklenir ve araç tarafından zorunlu uygulanır.
+# robots.txt ve kullanım şartları 27.09.2026'da kontrol edildi. Hukuki görüş değildir;
+# şartlar değişebilir, yeni bir kaynak eklemeden önce ikisini de kontrol et.
+
+country = "TR"
+language = "tr"
+
+[search]
+# Arama aracı ABD odaklı. Sonuçları Türk alan adlarıyla sınırlamak (WebSearch allowed_domains)
+# yerel ve güncel sonuç getiriyor; isabet için sorguda şirket türü + olay fiili kullan.
+news_domains = [
+  "dunya.com", "ekonomim.com", "aa.com.tr", "hurriyet.com.tr", "bigpara.hurriyet.com.tr",
+  "foodinlife.com", "gurmemagazin.net", "turizmguncel.com", "mallreport.com.tr",
+]
+query_tips = [
+  "Şirket türü + olay fiili kullan: 'catering firması ihale kazandı', 'restoran zinciri yeni şube açtı', 'yatırım aldı'.",
+  "Tarih ekle: ay ve yıl ('Eylül 2026'); Türk haber siteleri eski içeriği bugünün tarihiyle gösterebilir, tarihi sayfadan doğrula.",
+  "Ek varyasyonlarını ayrı ayrı dene: 'yemek yetmedi', 'yemekler yetmiyor', 'yemek kalmamıştı'.",
+  "Genel arama sonuçları mevzuat haberi getirirse şirket adıyla ya da sektör dergisi alan adıyla daralt.",
+]
+
+# Keşif spider'ının tarayacağı liste sayfaları (`python -m outreach discover`). Ürün paketi
+# hangilerini kullanacağını `[discovery] listings = [...]` ile seçer. Yeni bir site eklemek için
+# önce robots.txt ve kullanım şartlarını kontrol et, sonra aynı alanlarla bir tanım ekle.
+# Kartlardaki kişi adları (şikayet edenler) hiçbir yerde kaydedilmez; sadece şirket ve başlık alınır.
+[[discovery.listings]]
+id = "sikayetvar-catering"
+url = "https://www.sikayetvar.com/catering"
+pages = 3
+page_param = "page"
+item_css = "article:not([aria-hidden])"
+entity_href = '^/([a-z0-9-]+)$'
+detail_href = '^/[a-z0-9-]+/[a-z0-9-]+$'
+exclude_href_prefixes = ["/uye/"]
+date_regex = '\d{1,2} (Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)( \d{4})?'
+
+[[discovery.listings]]
+id = "sikayetvar-yemekhane"
+url = "https://www.sikayetvar.com/yemekhane"
+pages = 3
+page_param = "page"
+item_css = "article:not([aria-hidden])"
+entity_href = '^/([a-z0-9-]+)$'
+detail_href = '^/[a-z0-9-]+/[a-z0-9-]+$'
+exclude_href_prefixes = ["/uye/"]
+date_regex = '\d{1,2} (Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)( \d{4})?'
+
+[[discovery.listings]]
+id = "sikayetvar-restoran"
+url = "https://www.sikayetvar.com/restoran"
+pages = 3
+page_param = "page"
+item_css = "article:not([aria-hidden])"
+entity_href = '^/([a-z0-9-]+)$'
+detail_href = '^/[a-z0-9-]+/[a-z0-9-]+$'
+exclude_href_prefixes = ["/uye/"]
+date_regex = '\d{1,2} (Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)( \d{4})?'
+
+[sources]
+review_sites = ["sikayetvar.com", "eksisozluk.com"]
+
+excluded = [
+  { domain = "yemeksepeti.com", reason = "Kullanım şartları: izinsiz ticari/reklam amaçlı kullanım yasak" },
+  { domain = "kariyer.net", reason = "Genel Koşullar: bilgilerin kopyalanmasına yalnızca ticari olmayan, kişisel ve tek seferlik kullanım için izin var" },
+]
+
+# robots.txt otomatik okumayı yasaklıyor; araç bunları zaten atlar. Kullanıcı isterse
+# seçili birkaç lead için sayfayı kendisi açıp metni `add-snapshot --method manual` ile ekleyebilir
+# (sadece iş bilgisi; bu platformların kendi kullanım şartları kontrol edilmedi).
+robots_blocked = ["google.com/maps", "linkedin.com", "instagram.com"]
+
+# Umut vadeden ama henüz robots.txt + kullanım şartları kontrol edilmemiş kaynaklar.
+to_check = [
+  "Ticaret Sicili Gazetesi (ticaretsicil.gov.tr): yeni şube, sermaye artırımı ilanları",
+  "Toplu yemek sektör dernekleri (TOYSAD, YESİDER) ve TÜRES üye listeleri: aday listesi",
+  "Diğer iş ilanı siteleri (secretcv.com, eleman.net, yenibiris.com): maliyet kontrol / satınalma ilanları",
+  "Şirketlerin kendi kariyer sayfaları: iş ilanı sinyali için en temiz kaynak",
+]

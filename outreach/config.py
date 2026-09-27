@@ -97,8 +97,35 @@ def product_dir(slug: str) -> Path:
     return path
 
 
+MARKETS = ROOT / "markets"
+
+
+def load_market(country: str) -> dict:
+    import tomllib
+
+    path = MARKETS / f"{country.lower()}.toml"
+    if not path.exists():
+        raise SystemExit(f"{country} için kaynak kataloğu yok: markets/{country.lower()}.toml "
+                         "(setup.md'deki adımlarla oluştur)")
+    with path.open("rb") as f:
+        return tomllib.load(f)
+
+
 def load_profile(slug: str) -> dict:
+    """Profile merged with its market catalog: market exclusions always apply, the pack can only add more."""
     import tomllib
 
     with (product_dir(slug) / "profile.toml").open("rb") as f:
-        return tomllib.load(f)
+        profile = tomllib.load(f)
+    country = profile.get("market", {}).get("country")
+    if not country:
+        return profile
+    market = load_market(country)
+    profile["_market"] = market
+    sources = profile.setdefault("sources", {})
+    seen = {e["domain"] for e in sources.get("excluded", [])}
+    sources["excluded"] = sources.get("excluded", []) + [
+        e for e in market.get("sources", {}).get("excluded", []) if e["domain"] not in seen]
+    sources["review_sites"] = list(dict.fromkeys(
+        sources.get("review_sites", []) + market.get("sources", {}).get("review_sites", [])))
+    return profile

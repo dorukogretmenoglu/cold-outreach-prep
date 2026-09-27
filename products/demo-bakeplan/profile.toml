@@ -28,18 +28,20 @@ job_post = ["pastane zinciri üretim planlama uzmanı ilan", "fırın \"üretim 
 news = ["pastane zinciri yeni şube açtı", "fırın zinciri büyüme yatırım"]
 review = ["site:sikayetvar.com pastane \"kalmamış\"", "site:sikayetvar.com fırın \"bayat\""]
 
-# Yorum kaynakları: robots.txt izinli ve kullanım şartları kontrol edilmiş siteler.
-# Şartları otomatik ya da ticari kullanımı yasaklayan siteleri `excluded` listesine ekle;
-# araç onları hiçbir yöntemle (elle eklenen dahil) kaynak olarak kabul etmez.
-[sources]
-review_sites = ["sikayetvar.com", "eksisozluk.com"]
-excluded = [
-  { domain = "yemeksepeti.com", reason = "Kullanım şartları: izinsiz ticari/reklam amaçlı kullanım yasak" },
-]
+# Hangi ülkede satış yapılıyor? Kaynak kataloğu markets/<ülke>.toml'dan yüklenir:
+# yorum siteleri, hariç tutulan kaynaklar ve yerel arama ipuçları. Pakete özel ek bir
+# kaynak yasağı gerekiyorsa [sources].excluded altına eklenir (katalogdakiler her zaman geçerli).
+[market]
+country = "TR"
+
+[discovery]
+listings = ["sikayetvar-restoran"]
 
 [scoring]
-signal_weights = { job_post = 15, news = 10, review = 10, public_post = 8 }
+signal_weights = { job_post = 15, news = 10, review = 10, public_post = 8, title = 15 }
 tiers = { A = 70, B = 45 }
+# Doğrulanmış bir karar vericinin alıntısında bu ünvanlardan biri geçerse "title" sinyali sayılır.
+relevant_titles = ["üretim müdürü", "üretim planlama", "maliyet kontrol", "satın alma", "operasyon müdürü"]
 
 [scoring.size]
 claim_type = "branch_count"

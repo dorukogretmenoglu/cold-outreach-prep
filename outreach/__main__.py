@@ -144,8 +144,42 @@ def cmd_fetch(args):
     snap_dir, profile = _snap_target(args)
     meta = fetch(args.url, snap_dir, expect=args.expect, min_chars=args.min_chars, excluded=_excluded(profile))
     meta["text_file"] = str(snap_dir / f"{meta['id']}.txt") if meta.get("chars") else None
+    if meta.get("full_sha256"):
+        meta["hidden_layer_file"] = str(snap_dir / f"{meta['id']}.full.txt")
     meta["html_dates"] = {k: v[:5] for k, v in meta.get("html_dates", {}).items()}
     _out(meta)
+
+
+def cmd_crawl(args):
+    from .crawl import crawl_site
+
+    rdir, _, profile = _run_ctx(args.run)
+    leads = {l["id"]: l for l in read_jsonl(rdir / "leads.jsonl")}
+    if args.lead not in leads:
+        raise SystemExit(f"bilinmeyen lead: {args.lead}")
+    result = crawl_site(leads[args.lead]["domain"], rdir / "snapshots", max_pages=args.max_pages,
+                        excluded=_excluded(profile))
+    write_json(rdir / "crawls" / f"{args.lead}.json", result)
+    _out(result)
+
+
+def cmd_discover(args):
+    from .crawl import discover
+
+    rdir, _, profile = _run_ctx(args.run)
+    market = profile.get("_market", {})
+    catalog = {l["id"]: l for l in market.get("discovery", {}).get("listings", [])}
+    wanted = profile.get("discovery", {}).get("listings", [])
+    unknown = [w for w in wanted if w not in catalog]
+    if unknown or not wanted:
+        raise SystemExit(f"profilde [discovery].listings eksik ya da bilinmeyen: {unknown or '-'}; "
+                         f"katalogdakiler: {sorted(catalog)}")
+    result = discover([catalog[w] for w in wanted], excluded=_excluded(profile))
+    write_json(rdir / "discovery.json", result)
+    _out({"aday_sayısı": len(result["candidates"]), "engellenen": result["blocked"],
+          "atlanan": result["skipped_listings"], "dosya": str(rdir / "discovery.json"),
+          "ilk_20": [{"entity": c["entity"], "count": c["count"],
+                      "son": c["items"][0]["date_text"] if c["items"] else ""} for c in result["candidates"][:20]]})
 
 
 def cmd_add_snapshot(args):
@@ -336,6 +370,11 @@ def main(argv=None):
     s = sub.add_parser("leads"); s.add_argument("--run", required=True); s.set_defaults(fn=cmd_leads)
     s = sub.add_parser("fetch"); s.add_argument("url"); s.add_argument("--run"); s.add_argument("--product")
     s.add_argument("--expect", nargs="*"); s.add_argument("--min-chars", type=int, default=400); s.set_defaults(fn=cmd_fetch)
+    s = sub.add_parser("crawl", help="lead'in sitesini spider ile tara, kanıt sayfalarını kaydet")
+    s.add_argument("--run", required=True); s.add_argument("--lead", required=True)
+    s.add_argument("--max-pages", type=int, default=25); s.set_defaults(fn=cmd_crawl)
+    s = sub.add_parser("discover", help="katalogdaki liste sayfalarını spider ile tara, aday şirketleri çıkar")
+    s.add_argument("--run", required=True); s.set_defaults(fn=cmd_discover)
     s = sub.add_parser("add-snapshot", help="kullanıcının verdiği ya da Chrome'unda okunan metni kaynak olarak kaydet (stdin)")
     s.add_argument("--url", required=True); s.add_argument("--method", choices=["manual", "chrome"], required=True)
     s.add_argument("--run"); s.add_argument("--product"); s.set_defaults(fn=cmd_add_snapshot)

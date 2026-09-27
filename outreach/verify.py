@@ -24,6 +24,7 @@ DEFAULT_POLICY: dict[str, dict] = {
     "public_post": {"max_content_age": 180},
     "person_title": {"max_content_age": 365, "undated_official_ok": True, "max_fetch_age": 7},
     "disqualifier": {"max_fetch_age": 30},
+    "vendor_reference": {"max_fetch_age": 30},  # "X uses our product" on a vendor's own site; informational
     "product_fact": {"source": "own"},
     "case_study": {"max_fetch_age": 180},
     "competitor_fact": {"max_fetch_age": 30},

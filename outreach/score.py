@@ -32,23 +32,27 @@ def score_lead(claims: list[dict], profile: dict, today: date) -> dict:
     size_rules = [size_rules] if isinstance(size_rules, dict) else size_rules
     matched = None
     for rule in size_rules:
-        unit = rule.get("unit", "şube")
+        units = rule.get("units") or [rule.get("unit", "şube")]  # e.g. ["şube", "mağaza", "restoran"]
         for c in claims:
             if c["type"] == rule.get("claim_type", "branch_count") and "value" in c \
-                    and c.get("unit", "şube") == unit:
-                matched = (rule, c, unit)
+                    and c.get("unit", "şube") in units:
+                matched = (rule, c, c.get("unit", "şube"))
                 break
         if matched:
             break
+    size_outside = False
     if matched:
         rule, c, unit = matched
         value = float(str(c["value"]).replace(".", "").replace(",", "."))
         if rule.get("min", 0) <= value <= rule.get("max", float("inf")):
             fit += 15
         else:
-            notes.append(f"büyüklük ({value:g} {unit}) hedef aralığın dışında")
+            size_outside = True
+            notes.append(f"büyüklük ({value:g} {unit}) hedef aralığın dışında ({rule.get('min', 0)}-{rule.get('max', '∞')})")
     else:
-        notes.append("büyüklük bilinmiyor (tahmin edilmedi)")
+        other = [c for c in claims if c["type"] == "branch_count" and "value" in c]
+        notes.append(f"büyüklük birimi ({other[0].get('unit')}) profildeki birimlerle eşleşmedi" if other
+                     else "büyüklük bilinmiyor (tahmin edilmedi)")
 
     signal_claims = [c for c in claims if c.get("signal") in weights]
     by_signal = {}
@@ -80,6 +84,10 @@ def score_lead(claims: list[dict], profile: dict, today: date) -> dict:
     total = fit + signal + timing + reach
     tiers = cfg.get("tiers", {"A": 70, "B": 45})
     tier = "A" if total >= tiers["A"] else "B" if total >= tiers["B"] else "C"
+    cap = cfg.get("size_outside_cap", "C")  # a verified size outside the target range can't be a priority
+    if size_outside and cap and "ABC".index(tier) < "ABC".index(cap):
+        notes.append(f"büyüklük hedef dışında olduğu için öncelik {tier} yerine {cap}")
+        tier = cap
     return {"score": total, "tier": tier, "why_now": why_now, "notes": notes,
             "relevant_people": [c["id"] for c in people],
             "breakdown": {"uyum": fit, "sinyal": signal, "zamanlama": timing, "ulaşılabilirlik": reach}}

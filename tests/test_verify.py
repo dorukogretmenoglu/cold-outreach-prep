@@ -430,6 +430,22 @@ def test_csv_neutralizes_formula_injection():
     assert parsed["Şirket"].startswith("'=") and parsed["Notlar"] == "'-1+2" and parsed["Mesaj"] == "normal"
 
 
+def test_carry_over_keeps_user_status_and_earlier_leads_but_not_auto_status():
+    from outreach.export import build
+    leads = [{"id": "a", "name": "A", "domain": "a.com", "status": "selected"}]
+    scores = {"a": {"tier": "C", "score": 30, "breakdown": {}, "notes": []}}
+    carry = {
+        "a.com": {"Site": "a.com", "Durum": "Taslak yazılmadı (öncelik B)", "Notlar": "benim notum"},
+        "old.com": {"Site": "old.com", "Şirket": "Old", "Öncelik": "B", "Skor": "53", "Durum": "Gönderildi 28.09"},
+    }
+    rows, _, _ = build(leads, [], [], [], scores, [], carry)
+    by_site = {r["Site"]: r for r in rows}
+    assert by_site["a.com"]["Durum"] == "Taslak yazılmadı (öncelik C)"   # auto status recomputed
+    assert by_site["a.com"]["Notlar"] == "benim notum"                    # user's note kept
+    assert by_site["old.com"]["Durum"] == "Gönderildi 28.09"              # earlier run's lead kept
+    assert [r["Site"] for r in rows] == ["old.com", "a.com"]              # B before C
+
+
 def test_review_invalidated_when_draft_changes():
     d = draft(errors=[])
     d["review"] = {"verdict": "pass", "draft_sha": draft_hash(d)}
@@ -497,6 +513,21 @@ def test_title_signal_off_when_weight_missing():
     profile = {"scoring": {"relevant_titles": ["maliyet kontrol"], "signal_weights": {"job_post": 15}}}
     c = {"id": "c1", "type": "person_title", "statement": "x", "quote": "Maliyet Kontrol Müdürü"}
     assert score_lead([c], profile, TODAY)["breakdown"]["sinyal"] == 0
+
+
+def test_size_unit_synonyms_and_out_of_range_cap():
+    profile = {"scoring": {"size": [{"units": ["şube", "mağaza"], "min": 5, "max": 60}],
+                           "signal_weights": {"review": 10}}}
+    big_chain = [{"id": "c1", "type": "branch_count", "unit": "mağaza", "value": 300, "statement": "x"},
+                 {"id": "c2", "type": "company_fact", "signal": "segment", "statement": "zincir"},
+                 {"id": "c3", "type": "review", "signal": "review", "statement": "stok yok", "content_date": "2026-09-26"}]
+    s = score_lead(big_chain, profile, TODAY)
+    assert s["score"] >= 45 and s["tier"] == "C"            # points say B, size says no
+    assert any("hedef aralığın" in n for n in s["notes"])
+    in_range = [dict(big_chain[0], value=12)] + big_chain[1:]
+    assert score_lead(in_range, profile, TODAY)["tier"] == "B"
+    odd_unit = [dict(big_chain[0], unit="nokta")]
+    assert any("eşleşmedi" in n for n in score_lead(odd_unit, profile, TODAY)["notes"])
 
 
 def test_disqualifier_eliminates_lead():

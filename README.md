@@ -80,3 +80,7 @@ The skill lives in `.claude/skills/cold-outreach-prep/`, the verifier in
   your status/notes columns are carried over from the latest version.
 - Code checks prove a quote exists; they cannot prove it is interpreted correctly. That is what the
   verifier agent and your own final read are for.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

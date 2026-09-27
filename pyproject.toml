@@ -3,6 +3,7 @@ name = "cold-outreach-prep"
 version = "0.1.0"
 description = "Evidence-first B2B prospect research and cold outreach drafting for Claude Code. Never sends anything."
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = ["scrapling[fetchers]>=0.4.15,<0.5"]
 
 [project.optional-dependencies]

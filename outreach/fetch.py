@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
-from .config import find_chrome, now_iso, read_json, write_json
+from .config import find_chrome, locked, now_iso, read_json, write_json
 from .textnorm import normalize
 
 USER_AGENT = "*"
@@ -36,28 +36,48 @@ def _domain(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def _robots_allows(url: str) -> tuple[bool, str]:
-    from scrapling.fetchers import Fetcher
+def _get_robots(robots_url: str) -> tuple[int, str]:
+    """Return (status, text). Falls back to a real browser when the HTTP client fails (e.g. TLS quirks)."""
+    from scrapling.fetchers import DynamicFetcher, Fetcher
 
-    robots_url = urljoin(url, "/robots.txt")
     try:
         resp = Fetcher.get(robots_url, timeout=15)
-    except Exception as e:  # network failure: we cannot know, so we record it and proceed
-        return True, f"robots.txt okunamadı ({type(e).__name__})"
-    if resp.status >= 400:
-        return True, f"robots.txt yok ({resp.status})"
+        return resp.status, resp.body.decode("utf-8", errors="replace")
+    except Exception:
+        kw = {"real_chrome": True} if find_chrome() else {}
+        page = DynamicFetcher.fetch(robots_url, timeout=30000, **kw)
+        return page.status, str(page.get_all_text(ignore_tags=("script", "style")))
+
+
+def robots_decision(status: int | None, text: str, url: str) -> tuple[bool, str]:
+    """RFC 9309: 4xx means no rules (allowed); 5xx or unreachable means assume full disallow."""
+    if status is None:
+        return False, "robots.txt okunamadı: RFC 9309 gereği tamamen yasak kabul edildi"
+    if 400 <= status < 500:
+        return True, f"robots.txt yok ({status})"
+    if status >= 500:
+        return False, f"robots.txt sunucu hatası ({status}): yasak kabul edildi"
     parser = RobotFileParser()
-    parser.parse(resp.body.decode("utf-8", errors="replace").splitlines())
+    parser.parse(text.splitlines())
     return parser.can_fetch(USER_AGENT, url), "robots.txt kontrol edildi"
 
 
+def _robots_allows(url: str) -> tuple[bool, str]:
+    try:
+        status, text = _get_robots(urljoin(url, "/robots.txt"))
+    except Exception:
+        status, text = None, ""
+    return robots_decision(status, text, url)
+
+
 def _wait_for_domain(clock_file: Path, domain: str) -> None:
-    clock = read_json(clock_file) if clock_file.exists() else {}
-    wait = clock.get(domain, 0) + MIN_DELAY_SECONDS - time.time()
-    if wait > 0:
-        time.sleep(wait)
-    clock[domain] = time.time()
-    write_json(clock_file, clock)
+    with locked(clock_file):
+        clock = read_json(clock_file) if clock_file.exists() else {}
+        wait = clock.get(domain, 0) + MIN_DELAY_SECONDS - time.time()
+        if wait > 0:
+            time.sleep(wait)
+        clock[domain] = time.time()
+        write_json(clock_file, clock)
 
 
 def _visible_text(page) -> str:
@@ -109,8 +129,15 @@ def _methods(chrome: str | None):
 
 
 def _next_id(snap_dir: Path) -> str:
-    existing = sorted(snap_dir.glob("s*.json"))
-    return f"s{len(existing) + 1:03d}"
+    """Reserve the next snapshot id by creating its metadata file exclusively (safe under parallel agents)."""
+    n = len(list(snap_dir.glob("s*.json"))) + 1
+    while True:
+        try:
+            with (snap_dir / f"s{n:03d}.json").open("x", encoding="utf-8") as f:
+                f.write("{}")
+            return f"s{n:03d}"
+        except FileExistsError:
+            n += 1
 
 
 USABLE_CHARS = 150

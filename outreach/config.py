@@ -2,6 +2,8 @@ import json
 import os
 import platform
 import shutil
+import time
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -27,6 +29,27 @@ def find_chrome() -> str | None:
         if Path(candidate).exists():
             return candidate
     return shutil.which("google-chrome") or shutil.which("chrome")
+
+
+@contextmanager
+def locked(path: Path, timeout: float = 60.0):
+    """Cross-process lock via an exclusively created lock file (parallel research agents share run files)."""
+    lock = path.with_name(path.name + ".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            if time.monotonic() > deadline:
+                raise SystemExit(f"kilit alınamadı: {lock} (takılı kaldıysa sil)")
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        os.close(fd)
+        lock.unlink(missing_ok=True)
 
 
 def now_iso() -> str:

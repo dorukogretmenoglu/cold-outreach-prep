@@ -214,6 +214,37 @@ def test_manual_snapshot_requires_url(tmp_path):
         save_manual("bir yerden kopyaladım", "metin metin metin metin metin", tmp_path, "manual")
 
 
+@pytest.mark.parametrize("status,text,allowed", [
+    (None, "", False),                                   # unreachable -> assume disallow (RFC 9309)
+    (503, "", False),                                    # server error -> disallow
+    (404, "", True),                                     # no robots.txt -> no rules
+    (200, "User-agent: *\nDisallow: /maps/", False),
+    (200, "User-agent: *\nDisallow: /admin/", True),
+])
+def test_robots_decision(status, text, allowed):
+    from outreach.fetch import robots_decision
+    assert robots_decision(status, text, "https://example.com/maps/place/x")[0] is allowed
+
+
+def test_retracted_claim_is_not_reverified_and_cannot_be_cited(tmp_path, monkeypatch):
+    import outreach.__main__ as cli
+    from outreach import config
+    monkeypatch.setattr(config, "RUNS", tmp_path)
+    monkeypatch.setattr(cli, "RUNS", tmp_path)
+    config.write_json(tmp_path / "r1" / "run.json", {"product": "demo-bakeplan", "created_at": "x"})
+    config.write_jsonl(tmp_path / "r1" / "leads.jsonl", [{"id": "acme", "name": "Acme", "domain": "acme.com", "status": "selected"}])
+    config.write_jsonl(tmp_path / "r1" / "claims.jsonl", [
+        {"id": "c001", "lead": "acme", "type": "review", "file": "README.md", "statement": "x",
+         "quote": "evidence-first B2B prospecting", "status": "verified"}])
+    cli.main(["retract-claim", "c001", "--run", "r1", "--reason", "iddia alıntıdan fazlasını söylüyor"])
+    cli.main(["verify", "--run", "r1"])
+    row = config.read_jsonl(tmp_path / "r1" / "claims.jsonl")[0]
+    assert row["status"] == "retracted"
+    errors = cli._check({"lead": "acme", "channel": "linkedin", "body": "x [c001]"},
+                        config.read_jsonl(tmp_path / "r1" / "claims.jsonl"), [], {})
+    assert any("doğrulanmış" in e for e in errors)
+
+
 # ---------- drafts ----------
 
 VERIFIED = {
@@ -270,6 +301,15 @@ def test_strip_markers():
     assert strip_markers("14 şubeniz var [c001]. Vaka [k002], sonuç.") == "14 şubeniz var. Vaka, sonuç."
 
 
+def test_csv_neutralizes_formula_injection():
+    from outreach.export import COLUMNS, to_csv
+    import csv as _csv, io as _io
+    row = {c: "" for c in COLUMNS}
+    row.update({"Şirket": '=HYPERLINK("http://evil","x")', "Notlar": "-1+2", "Mesaj": "normal"})
+    parsed = next(_csv.DictReader(_io.StringIO(to_csv([row]))))
+    assert parsed["Şirket"].startswith("'=") and parsed["Notlar"] == "'-1+2" and parsed["Mesaj"] == "normal"
+
+
 def test_review_invalidated_when_draft_changes():
     d = draft(errors=[])
     d["review"] = {"verdict": "pass", "draft_sha": draft_hash(d)}
@@ -323,5 +363,5 @@ def test_size_rules_match_by_unit():
 
 
 def test_disqualifier_eliminates_lead():
-    s = score_lead([{"id": "c1", "type": "disqualifier", "statement": "robotPOS kullanıyor"}], {}, TODAY)
+    s = score_lead([{"id": "c1", "type": "disqualifier", "statement": "zaten bir rakip ürün kullanıyor"}], {}, TODAY)
     assert s["tier"] == "X"

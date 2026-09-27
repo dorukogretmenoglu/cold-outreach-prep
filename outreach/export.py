@@ -63,6 +63,12 @@ def build(leads: list[dict], claims: list[dict], kb_claims: list[dict], drafts: 
         s = scores.get(lid, {})
         draft = drafts_by_lead.get(lid, {})
         ready, check = _review_status(draft) if draft else (False, "Taslak yok")
+        if ready:
+            status = "Taslak - onayını bekliyor"
+        elif draft:
+            status = "Kontrol gerekli"
+        else:
+            status = "Elendi" if s.get("tier") == "X" else f"Taslak yazılmadı (öncelik {s.get('tier', '?')})"
 
         order = cited_ids(f"{draft.get('subject', '')}\n{draft.get('body', '')}")
         numbering = {cid: i for i, cid in enumerate(order, 1)}
@@ -86,7 +92,7 @@ def build(leads: list[dict], claims: list[dict], kb_claims: list[dict], drafts: 
             "Mesaj": strip_markers(draft.get("body", "")),
             "Kaynaklar": "\n".join(sources),
             "Doğrulama": check,
-            "Durum": "Taslak - onayını bekliyor" if ready else "Kontrol gerekli",
+            "Durum": status,
             "Sonraki adım": "",
             "Notlar": "",
         }
@@ -114,11 +120,21 @@ def build(leads: list[dict], claims: list[dict], kb_claims: list[dict], drafts: 
     return rows, reviews, gmail
 
 
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _neutralize(value):
+    # Scraped text starting with a formula character would execute when imported into Sheets/Excel.
+    if isinstance(value, str) and value.startswith(_FORMULA_START):
+        return "'" + value
+    return value
+
+
 def to_csv(rows: list[dict]) -> str:
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=COLUMNS)
     writer.writeheader()
-    writer.writerows(rows)
+    writer.writerows({k: _neutralize(v) for k, v in row.items()} for row in rows)
     return buf.getvalue()
 
 

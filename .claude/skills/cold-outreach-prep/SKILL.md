@@ -66,6 +66,12 @@ EOF
 
 `add-claim` verifies immediately. If it is rejected, open the snapshot text and copy the exact span, or drop the claim. **Never make a claim pass by weakening the evidence rule or rewording the statement to say more than the quote.** A lead with thin evidence is a valid outcome.
 
+The code cannot tell when a statement adds unnumbered information the quote does not contain (e.g. extra customer types). Re-read every statement against its quote. If one overreaches, retract it (claims are never deleted, retracted ones cannot be cited) and add a tightened one:
+
+```bash
+python -m outreach retract-claim c003 --run <run> --reason "<neden>"
+```
+
 ### User-supplied sources (Google Maps reviews and similar)
 
 Only for **selected tier A/B leads**, and only when `fetch` cannot read the page (robots.txt or failure):
@@ -80,7 +86,7 @@ Only for **selected tier A/B leads**, and only when `fetch` cannot read the page
 
 These snapshots can back `review`, `public_post`, `news` and `person_title` claims. The verifier refuses them for official facts (price, branch count, contact, company facts), which must be fetched live from the company's site. Exported sources are labelled as user-supplied.
 
-Several leads can be researched in parallel by general-purpose subagents (one lead each). Give each one the run id, the lead id, the profile path, and tell it to read this skill and `references/evidence.md` and to record claims only via the CLI.
+Several leads can be researched in parallel by general-purpose subagents (one lead each; the CLI locks run files, so parallel writes are safe). Give each one the run id, the lead id, the official domain, the discovery hint (marked as not evidence), the profile path, and tell it to read this skill and `references/evidence.md`, to record claims only via the CLI, and to report claims recorded, rejected, not found and anything suspicious. Review their statements for overreach before scoring.
 
 ## 3. Score
 

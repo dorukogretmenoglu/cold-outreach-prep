@@ -6,7 +6,7 @@ import unicodedata
 from pathlib import Path
 
 from . import export as exp
-from .config import (PRODUCTS, RUNS, find_chrome, load_profile, now_iso, product_dir, read_json,
+from .config import (PRODUCTS, RUNS, find_chrome, load_profile, locked, now_iso, product_dir, read_json,
                      read_jsonl, run_dir, today, write_json, write_jsonl)
 from .fetch import fetch, save_manual
 from .kb import search
@@ -67,6 +67,8 @@ def _verify_all(claims: list[dict], snap_dir: Path, profile: dict, leads: dict |
     own = _domain(profile.get("product", {}).get("website", ""))
     excluded = _excluded(profile)
     for c in claims:
+        if c.get("status") == "retracted":
+            continue
         lead = leads.get(c.get("lead")) if leads is not None else None
         errors = verify_claim(c, snap_dir, policy, today(), lead=lead, own_domain=own, excluded=excluded)
         if leads is not None and c.get("lead") not in leads:
@@ -184,13 +186,16 @@ def cmd_add_claim(args):
 
 
 def cmd_verify(args):
+    _out(_run_verify(args))
+
+
+def _run_verify(args) -> dict:
     if args.product:
         profile = load_profile(args.product)
         path, snap_dir = _kb_paths(args.product)
         claims = _verify_all(read_jsonl(path), snap_dir, profile, None)
         write_jsonl(path, claims)
-        _out(_summary(claims))
-        return
+        return _summary(claims)
     rdir, run, profile = _run_ctx(args.run)
     leads = {l["id"]: l for l in read_jsonl(rdir / "leads.jsonl")}
     claims = _verify_all(read_jsonl(rdir / "claims.jsonl"), rdir / "snapshots", profile, leads)
@@ -200,14 +205,14 @@ def cmd_verify(args):
     for d in drafts:
         d["errors"] = _check(d, claims, kb_claims, profile)
     write_jsonl(rdir / "drafts.jsonl", drafts)
-    _out({"claims": _summary(claims),
-          "drafts": {d["lead"]: d["errors"] or "geçti" for d in drafts}})
+    return {"claims": _summary(claims), "drafts": {d["lead"]: d["errors"] or "geçti" for d in drafts}}
 
 
 def _summary(claims: list[dict]) -> dict:
     rejected = [{"id": c["id"], "statement": c.get("statement"), "errors": c["errors"]}
                 for c in claims if c["status"] == "rejected"]
-    return {"toplam": len(claims), "doğrulandı": len(claims) - len(rejected), "reddedildi": rejected}
+    return {"toplam": len(claims), "doğrulandı": sum(c["status"] == "verified" for c in claims),
+            "geri_çekildi": sum(c["status"] == "retracted" for c in claims), "reddedildi": rejected}
 
 
 def _verified_kb(slug: str) -> list[dict]:
@@ -219,6 +224,18 @@ def _check(draft: dict, claims: list[dict], kb_claims: list[dict], profile: dict
     verified = {c["id"]: c for c in claims if c["status"] == "verified" and c.get("lead") == draft["lead"]}
     verified.update({c["id"]: c for c in kb_claims})
     return check_draft(draft, verified, profile)
+
+
+def cmd_retract_claim(args):
+    """Claims are never deleted (audit trail); a retracted claim can no longer be cited."""
+    path = (run_dir(args.run) / "claims.jsonl") if args.run else _kb_paths(args.product)[0]
+    claims = read_jsonl(path)
+    target = next((c for c in claims if c["id"] == args.id), None)
+    if target is None:
+        raise SystemExit(f"{args.id} bulunamadı")
+    target.update(status="retracted", retracted_reason=args.reason, retracted_at=now_iso())
+    write_jsonl(path, claims)
+    _out({"id": args.id, "status": "retracted"})
 
 
 def cmd_add_draft(args):
@@ -274,7 +291,7 @@ def cmd_kb_search(args):
 
 def cmd_export(args):
     rdir, run, profile = _run_ctx(args.run)
-    cmd_verify(argparse.Namespace(run=args.run, product=None))
+    verification = _run_verify(argparse.Namespace(run=args.run, product=None))
     scores = _scores(rdir, profile)
     claims = [c for c in read_jsonl(rdir / "claims.jsonl") if c["status"] == "verified"]
     carry = exp.read_carry_over(Path(args.carry_over)) if args.carry_over else None
@@ -291,7 +308,8 @@ def cmd_export(args):
     _out({"sheet_csv": str(out / "sheet.csv"), "review_dir": str(out / "review"),
           "gmail_drafts": str(out / "gmail_drafts.json"), "satır": len(rows),
           "gönderime hazır e-posta": len(gmail),
-          "öncelik": {t: sum(r["Öncelik"] == t for r in rows) for t in "ABCX"}})
+          "öncelik": {t: sum(r["Öncelik"] == t for r in rows) for t in "ABCX"},
+          "doğrulama": verification})
 
 
 def cmd_state(args):
@@ -324,6 +342,9 @@ def main(argv=None):
     for name, fn in (("add-claim", cmd_add_claim), ("add-draft", cmd_add_draft)):
         s = sub.add_parser(name); s.add_argument("--run"); s.add_argument("--product")
         s.add_argument("--json"); s.add_argument("--stdin", action="store_true"); s.set_defaults(fn=fn)
+    s = sub.add_parser("retract-claim", help="iddiayı geri çek (silinmez, alıntılanamaz olur)")
+    s.add_argument("id"); s.add_argument("--reason", required=True); s.add_argument("--run"); s.add_argument("--product")
+    s.set_defaults(fn=cmd_retract_claim)
     s = sub.add_parser("set-review"); s.add_argument("--run", required=True); s.add_argument("--lead", required=True)
     s.add_argument("--json"); s.add_argument("--stdin", action="store_true"); s.set_defaults(fn=cmd_set_review)
     s = sub.add_parser("verify"); s.add_argument("--run"); s.add_argument("--product"); s.set_defaults(fn=cmd_verify)
@@ -335,7 +356,17 @@ def main(argv=None):
     s.set_defaults(fn=cmd_state)
 
     args = p.parse_args(argv)
-    args.fn(args)
+    if args.cmd not in _MUTATING:
+        args.fn(args)
+        return
+    # One lock per run (or per product KB) so parallel research agents never interleave writes.
+    target = RUNS / args.run / "run.json" if getattr(args, "run", None) else PRODUCTS / args.product / "profile.toml"
+    with locked(target):
+        args.fn(args)
+
+
+_MUTATING = {"add-lead", "select", "add-claim", "retract-claim", "verify", "add-draft", "set-review", "score",
+             "export", "state"}
 
 
 if __name__ == "__main__":

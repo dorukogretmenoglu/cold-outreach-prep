@@ -423,6 +423,38 @@ def test_size_in_range_prescreen():
     assert size_in_range(10, "firma", profile) is None
 
 
+@pytest.mark.parametrize("sentence", [
+    "Akşam gittik yemekler bize yetmedi.",
+    "Saat 13'te yemek yoktu, bitti dediler.",
+    "Vitrinde tatlı kalmamıştı.",
+    "Sipariş ettiğim ürün stokta yokmuş.",
+    "Simit bayattı.",
+    "Öğlen gittiğimizde ana yemek tükenmişti.",
+    "Yemekhanede yemek yetersiz çıktı, herkese yetişmedi.",
+])
+def test_problem_net_catches_paraphrases(sentence):
+    from outreach.brief import page_candidates
+    cands = page_candidates(sentence, "s1", "extra", "x.com", [])
+    assert any(c["kind"] == "problem" and c["rank"] == 0 for c in cands)
+
+
+def test_problem_net_is_wide_on_purpose_model_decides():
+    from outreach.brief import page_candidates
+    # a portion-size complaint is caught (weak) so a model can reject it; it is not a stockout
+    cands = page_candidates("Porsiyonlar çok küçüktü.", "s1", "extra", "x.com", [])
+    assert [c["rank"] for c in cands if c["kind"] == "problem"] == [1]
+
+
+def test_brief_finds_parent_group_listing_and_keeps_exact_spans():
+    from outreach.brief import page_candidates
+    text = "Hakkımızda\nÖrnek Grup Şirketleri\nÖrnek Et\nÖrnek Lokantacılık\nİletişim"
+    parent = [c for c in page_candidates(text, "s1", "about", "x.com", []) if c["kind"] == "parent"]
+    assert parent and "Örnek Lokantacılık" in parent[0]["quote"]
+    long_line = "Kısa giriş cümlesi. " + "Uzun bir açıklama cümlesi burada devam ediyor. " * 8 + "Bugün 21 şubemizle hizmet veriyoruz."
+    sizes = [c for c in page_candidates(long_line, "s1", "about", "x.com", []) if c["kind"] == "size"]
+    assert sizes and sizes[0]["quote"] == "Bugün 21 şubemizle hizmet veriyoruz." and sizes[0]["quote"] in long_line
+
+
 # ---------- drafts ----------
 
 VERIFIED = {

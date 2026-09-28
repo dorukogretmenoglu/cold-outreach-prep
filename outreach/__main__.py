@@ -364,6 +364,40 @@ def cmd_retract_claim(args):
     _out({"id": args.id, "status": "retracted"})
 
 
+def cmd_add_claims(args):
+    """Record many claims in one call (one lock, one verification pass). Output stays compact."""
+    rdir, _, profile = _run_ctx(args.run)
+    batch = _payload(args)
+    if not isinstance(batch, list):
+        raise SystemExit("JSON listesi bekleniyor: [{...}, {...}]")
+    leads = {l["id"]: l for l in read_jsonl(rdir / "leads.jsonl")}
+    claims = read_jsonl(rdir / "claims.jsonl")
+    results = []
+    for claim in batch:
+        if claim.get("lead") not in leads or claim.get("type") not in LEAD_TYPES:
+            results.append({"statement": str(claim.get("statement", ""))[:60], "error": "geçersiz lead ya da tür"})
+            continue
+        claim["id"] = f"c{len(claims) + 1:03d}"
+        claim["added_at"] = now_iso()
+        _verify_all([claim], rdir / "snapshots", profile, leads)
+        claims.append(claim)
+        results.append({"id": claim["id"], "status": claim["status"], **({"errors": claim["errors"]} if claim["errors"] else {})})
+    write_jsonl(rdir / "claims.jsonl", claims)
+    _out(results)
+
+
+def cmd_brief(args):
+    from .brief import build_brief
+
+    rdir, _, profile = _run_ctx(args.run)
+    leads = {l["id"]: l for l in read_jsonl(rdir / "leads.jsonl")}
+    if args.lead not in leads:
+        raise SystemExit(f"bilinmeyen lead: {args.lead}")
+    brief = build_brief(rdir, leads[args.lead], profile, extra_snapshots=args.extra or [])
+    write_json(rdir / "briefs" / f"{args.lead}.json", brief)
+    _out(brief)
+
+
 def cmd_add_draft(args):
     rdir, run, profile = _run_ctx(args.run)
     draft = _payload(args)
@@ -478,6 +512,12 @@ def main(argv=None):
     for name, fn in (("add-claim", cmd_add_claim), ("add-draft", cmd_add_draft)):
         s = sub.add_parser(name); s.add_argument("--run"); s.add_argument("--product")
         s.add_argument("--json"); s.add_argument("--stdin", action="store_true"); s.set_defaults(fn=fn)
+    s = sub.add_parser("add-claims", help="bir JSON listesiyle birden çok iddiayı tek seferde kaydet")
+    s.add_argument("--run", required=True); s.add_argument("--json"); s.add_argument("--stdin", action="store_true")
+    s.set_defaults(fn=cmd_add_claims)
+    s = sub.add_parser("brief", help="lead'in kayıtlı sayfalarından kodla aday alıntı özeti çıkar")
+    s.add_argument("--run", required=True); s.add_argument("--lead", required=True)
+    s.add_argument("--extra", nargs="*", help="ek snapshot id'leri (ör. şikayet sayfaları)"); s.set_defaults(fn=cmd_brief)
     s = sub.add_parser("retract-claim", help="iddiayı geri çek (silinmez, alıntılanamaz olur)")
     s.add_argument("id"); s.add_argument("--reason", required=True); s.add_argument("--run"); s.add_argument("--product")
     s.set_defaults(fn=cmd_retract_claim)
@@ -501,8 +541,8 @@ def main(argv=None):
         args.fn(args)
 
 
-_MUTATING = {"add-lead", "select", "add-claim", "retract-claim", "verify", "add-draft", "set-review", "score",
-             "export", "state", "promote"}
+_MUTATING = {"add-lead", "select", "add-claim", "add-claims", "retract-claim", "verify", "add-draft", "set-review",
+             "score", "export", "state", "promote"}
 
 
 if __name__ == "__main__":

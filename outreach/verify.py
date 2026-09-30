@@ -85,7 +85,8 @@ def load_source(claim: dict, snap_dir: Path) -> tuple[Source | None, str | None]
             return None, f"snapshot {sid} metni yok"
         text = text_path.read_text(encoding="utf-8")
         if hashlib.sha256(text.encode("utf-8")).hexdigest() != meta.get("sha256"):
-            return None, f"snapshot {sid} çekimden sonra değiştirilmiş"
+            return None, (f"snapshot {sid} çekimden sonra değiştirilmiş (eski bir kayıtsa önce "
+                          f"`repair-snapshots` çalıştır; değişiklik kanıtlanırsa sayfayı yeniden çek)")
         full = ""
         full_path = snap_dir / f"{sid}.full.txt"
         if meta.get("full_sha256") and full_path.exists():

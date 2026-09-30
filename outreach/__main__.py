@@ -8,7 +8,7 @@ from pathlib import Path
 from . import export as exp
 from .config import (PRODUCTS, RUNS, find_chrome, load_profile, locked, now_iso, product_dir, read_json,
                      read_jsonl, run_dir, today, write_json, write_jsonl)
-from .fetch import fetch, save_manual
+from .fetch import fetch, repair_snapshot, save_manual
 from .kb import search
 from .score import score_lead
 from .verify import KB_TYPES, LEAD_TYPES, build_policy, check_draft, verify_claim
@@ -386,6 +386,21 @@ def cmd_add_claims(args):
     _out(results)
 
 
+def cmd_repair_snapshots(args):
+    """Re-save snapshots written before the line-ending fix, only when their bytes prove them untouched."""
+    snap_dir = run_dir(args.run) / "snapshots"
+    result = {"repaired": [], "mismatch": [], "ok": 0}
+    for meta_path in sorted(snap_dir.glob("s*.json")):
+        if not read_json(meta_path).get("ok"):
+            continue
+        status = repair_snapshot(snap_dir, meta_path.stem)
+        if status == "ok":
+            result["ok"] += 1
+        else:
+            result[status].append(meta_path.stem)
+    _out(result)
+
+
 def cmd_brief(args):
     from .brief import build_brief
 
@@ -518,6 +533,9 @@ def main(argv=None):
     s = sub.add_parser("brief", help="lead'in kayıtlı sayfalarından kodla aday alıntı özeti çıkar")
     s.add_argument("--run", required=True); s.add_argument("--lead", required=True)
     s.add_argument("--extra", nargs="*", help="ek snapshot id'leri (ör. şikayet sayfaları)"); s.set_defaults(fn=cmd_brief)
+    s = sub.add_parser("repair-snapshots", help="satır sonu düzeltmesinden önce kaydedilen sayfaları, "
+                       "değişmedikleri kanıtlanırsa yeniden kaydet")
+    s.add_argument("--run", required=True); s.set_defaults(fn=cmd_repair_snapshots)
     s = sub.add_parser("retract-claim", help="iddiayı geri çek (silinmez, alıntılanamaz olur)")
     s.add_argument("id"); s.add_argument("--reason", required=True); s.add_argument("--run"); s.add_argument("--product")
     s.set_defaults(fn=cmd_retract_claim)
@@ -542,7 +560,7 @@ def main(argv=None):
 
 
 _MUTATING = {"add-lead", "select", "add-claim", "add-claims", "retract-claim", "verify", "add-draft", "set-review",
-             "score", "export", "state", "promote"}
+             "score", "export", "state", "promote", "repair-snapshots"}
 
 
 if __name__ == "__main__":

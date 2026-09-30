@@ -1,6 +1,6 @@
 import hashlib
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -185,9 +185,12 @@ def test_manual_snapshot_backs_review_but_not_official_facts(tmp_path):
     meta = save_manual("https://www.google.com/maps/place/acme", "Ayşe K. · 2 gün önce\nAkşam gittik, tatlılar tükenmişti.",
                        tmp_path, "chrome")
     assert meta["ok"] and meta["captured_by"]
+    # "2 gün önce" counts from the capture time, which is now, so neither date can be hard-coded
+    captured = date.fromisoformat(meta["fetched_at"][:10])
     review = claim(type="review", snapshot=meta["id"], statement="Müşteri akşam tatlıların tükendiğini yazmış",
-                   quote="Akşam gittik, tatlılar tükenmişti.", content_date="2026-09-25", date_evidence="2 gün önce")
-    assert check(tmp_path, review) == []
+                   quote="Akşam gittik, tatlılar tükenmişti.", content_date=(captured - timedelta(days=2)).isoformat(),
+                   date_evidence="2 gün önce")
+    assert verify_claim(review, tmp_path, POLICY, captured, lead=LEAD) == []
     meta2 = save_manual("https://acme-lokanta.com.tr/subeler", "Türkiye genelinde 14 şubemizle hizmet veriyoruz.",
                         tmp_path, "manual")
     official = claim(type="branch_count", snapshot=meta2["id"], statement="14 şube",
@@ -453,6 +456,80 @@ def test_brief_finds_parent_group_listing_and_keeps_exact_spans():
     long_line = "Kısa giriş cümlesi. " + "Uzun bir açıklama cümlesi burada devam ediyor. " * 8 + "Bugün 21 şubemizle hizmet veriyoruz."
     sizes = [c for c in page_candidates(long_line, "s1", "about", "x.com", []) if c["kind"] == "size"]
     assert sizes and sizes[0]["quote"] == "Bugün 21 şubemizle hizmet veriyoruz." and sizes[0]["quote"] in long_line
+
+
+def test_size_net_takes_synonyms_and_profile_units():
+    from outreach.brief import page_candidates, size_pattern
+    sizes = [c for c in page_candidates("Şehrin dört bir yanında 18 mekanımız var.", "s1", "about", "x.com", [])
+             if c["kind"] == "size"]
+    assert sizes
+    text = "Bugün 9 otelimizde misafir ağırlıyoruz."
+    assert not [c for c in page_candidates(text, "s1", "about", "x.com", []) if c["kind"] == "size"]
+    own = page_candidates(text, "s1", "about", "x.com", [], size_pattern(["otel"]))
+    assert [c for c in own if c["kind"] == "size"]
+
+
+def _brief_run(tmp_path, pages):
+    from outreach.config import write_json
+    (tmp_path / "snapshots").mkdir()
+    (tmp_path / "crawls").mkdir()
+    for sid, ptype, text in pages:
+        (tmp_path / "snapshots" / f"{sid}.txt").write_text(text, encoding="utf-8")
+        write_json(tmp_path / "snapshots" / f"{sid}.json", {"id": sid, "ok": True})
+    write_json(tmp_path / "crawls" / "acme.json",
+               {"pages": [{"snapshot": sid, "type": ptype, "ok": True} for sid, ptype, _ in pages]})
+
+
+def test_brief_raises_alarm_for_empty_expected_kinds_and_names_pages(tmp_path):
+    from outreach.brief import build_brief
+    _brief_run(tmp_path, [("s1", "about", "Acme Lokanta 1998'den beri lezzet sunuyor."),
+                          ("s2", "branches", "Kadıköy / Beşiktaş / Ataşehir"),
+                          ("s3", "contact", "İletişim: info@acme-lokanta.com.tr")])
+    brief = build_brief(tmp_path, LEAD, {})
+    missing = {m["kind"]: m for m in brief["missing"]}
+    assert set(missing) == {"size", "person"}          # contact was found, so no alarm for it
+    assert missing["size"]["open"] == ["s2", "s1"]      # branches page first, then about
+    assert missing["person"]["open"] == ["s1"] and "team" not in missing["person"]["note"]
+
+
+def test_brief_alarm_says_when_no_page_to_open(tmp_path):
+    from outreach.brief import build_brief
+    _brief_run(tmp_path, [("s1", "press", "Yeni menümüz yayında.")])
+    missing = {m["kind"]: m for m in build_brief(tmp_path, LEAD, {})["missing"]}
+    assert missing["contact"]["open"] == [] and "no matching page" in missing["contact"]["note"]
+
+
+def _legacy_snapshot(tmp_path, text):
+    """What the pre-fix code did: hash the text in memory, then Windows wrote every LF as CRLF."""
+    sid = make_snapshot(tmp_path, text="placeholder")
+    meta = json.loads((tmp_path / f"{sid}.json").read_text(encoding="utf-8"))
+    meta["sha256"] = hashlib.sha256(text.encode()).hexdigest()
+    (tmp_path / f"{sid}.json").write_text(json.dumps(meta), encoding="utf-8")
+    (tmp_path / f"{sid}.txt").write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+    return sid
+
+
+def test_legacy_snapshot_is_repaired_only_when_bytes_prove_it_untouched(tmp_path):
+    from outreach.fetch import repair_snapshot
+    text = PAGE.replace("Kurumsal\n", "Kurumsal\r\n")   # the page itself carried a Windows line end
+    sid = _legacy_snapshot(tmp_path, text)
+    c = claim(type="branch_count", statement="14 şubesi var", quote="Türkiye genelinde 14 şubemizle", value=14)
+    assert any("değiştirilmiş" in e for e in check(tmp_path, c))
+    assert repair_snapshot(tmp_path, sid) == "repaired"
+    assert check(tmp_path, c) == []
+    assert repair_snapshot(tmp_path, sid) == "ok"
+    meta = json.loads((tmp_path / f"{sid}.json").read_text(encoding="utf-8"))
+    assert meta["repaired"]["sha256"]["before"] == hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_tampered_legacy_snapshot_is_not_repaired(tmp_path):
+    from outreach.fetch import repair_snapshot
+    sid = _legacy_snapshot(tmp_path, PAGE.replace("Kurumsal\n", "Kurumsal\r\n"))
+    path = tmp_path / f"{sid}.txt"
+    path.write_bytes(path.read_bytes().replace(b"14 ", b"41 "))
+    assert repair_snapshot(tmp_path, sid) == "mismatch"
+    c = claim(type="branch_count", statement="41 şubesi var", quote="Türkiye genelinde 41 şubemizle", value=41)
+    assert any("değiştirilmiş" in e for e in check(tmp_path, c))
 
 
 # ---------- drafts ----------

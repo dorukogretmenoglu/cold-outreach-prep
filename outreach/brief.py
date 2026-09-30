@@ -10,8 +10,19 @@ from pathlib import Path
 from .config import read_json
 from .textnorm import normalize
 
-_UNIT = r"(şube|restoran|mağaza|lokasyon|nokta|buluşma noktası|öğün|yemek|kişi)"
-SIZE = re.compile(rf"(\d[\d.,]*)\s*(bin|milyon)?\s*(?:['’]?[a-zçğıöşü]*\s*)?{_UNIT}", re.I)
+UNITS = ["şube", "restoran", "mağaza", "lokasyon", "nokta", "buluşma noktası", "mekan", "lokanta", "kafe", "cafe",
+         "öğün", "yemek", "kişi"]
+
+
+def size_pattern(extra_units=()) -> re.Pattern:
+    """Number + optional scale + unit. The profile's own size units are added, so a product that counts
+    'otel' or 'kampüs' is covered without editing code."""
+    units = sorted({u.lower() for u in [*UNITS, *extra_units]}, key=len, reverse=True)
+    alt = "|".join(re.escape(u) for u in units)
+    return re.compile(rf"(\d[\d.,]*)\s*(bin|milyon)?\s*(?:['’]?[a-zçğıöşü]*\s*)?({alt})", re.I)
+
+
+SIZE = size_pattern()
 EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 TITLES = ["kurucu", "genel müdür", "ceo", "coo", "cfo", "yönetim kurulu", "başkan", "direktör", "müdür",
           "founder", "managing director", "president", "sahibi", "ortağı", "şef"]
@@ -28,6 +39,10 @@ PARENT = ["holding", "grubu", "grup şirket", "group", "bünyesinde", "çatısı
           "şirketler"]
 MAX_PER_KIND = 12
 MAX_PER_PAGE = 3
+# A chain's site almost always states its size, a contact and usually its leaders. An empty kind is
+# more likely a pattern miss than a real absence, so the brief raises it and names the pages to read.
+EXPECTED = {"size": ["branches", "about"], "contact": ["contact"], "person": ["team", "about"]}
+MAX_FALLBACK_PAGES = 2
 
 
 def _lines(text: str) -> list[str]:
@@ -54,7 +69,8 @@ def _plausible(num: str, scale: str) -> bool:
     return scale != "" or not 1900 <= n <= 2099
 
 
-def page_candidates(text: str, sid: str, page_type: str, domain: str, titles: list[str]) -> list[dict]:
+def page_candidates(text: str, sid: str, page_type: str, domain: str, titles: list[str],
+                    size_re: re.Pattern = SIZE) -> list[dict]:
     lines = _lines(text)
     out = []
     for i, line in enumerate(lines):
@@ -63,7 +79,7 @@ def page_candidates(text: str, sid: str, page_type: str, domain: str, titles: li
         else:
             parts = [line]
         for part in parts:
-            for m in SIZE.finditer(part):
+            for m in size_re.finditer(part):
                 if _plausible(m.group(1), m.group(2) or ""):
                     out.append(_cand("size", sid, page_type, part))
                     break
@@ -97,13 +113,16 @@ def build_brief(run_dir: Path, lead: dict, profile: dict, extra_snapshots: list[
         titles += [t.lower() for t in dm.get("titles", [])]
     titles += [t.lower() for t in profile.get("scoring", {}).get("relevant_titles", [])]
     titles = [normalize(t) for t in dict.fromkeys(titles)]
+    rules = profile.get("scoring", {}).get("size", [])
+    size_re = size_pattern(u for r in ([rules] if isinstance(rules, dict) else rules)
+                           for u in (r.get("units") or [r.get("unit", "şube")]))
 
     cands, dates = [], {}
     for sid, ptype in targets:
         txt = snap_dir / f"{sid}.txt"
         if not txt.exists():
             continue
-        cands += page_candidates(txt.read_text(encoding="utf-8"), sid, ptype, lead["domain"], titles)
+        cands += page_candidates(txt.read_text(encoding="utf-8"), sid, ptype, lead["domain"], titles, size_re)
         meta = read_json(snap_dir / f"{sid}.json")
         if meta.get("html_dates"):
             dates[sid] = {k: v[:2] for k, v in meta["html_dates"].items()}
@@ -122,7 +141,19 @@ def build_brief(run_dir: Path, lead: dict, profile: dict, extra_snapshots: list[
             per_page[page_key] = per_page.get(page_key, 0) + 1
             bucket.append({k: c[k] for k in ("snapshot", "page_type", "quote")})
     return {"lead": lead["id"], "domain": lead["domain"], "pages": len(targets), "candidates": brief,
-            "html_dates": dates}
+            "missing": missing_kinds(brief, targets), "html_dates": dates}
+
+
+def missing_kinds(candidates: dict, targets: list[tuple[str, str]]) -> list[dict]:
+    """Alarm for expected kinds that came back empty, with the few pages where they usually are."""
+    out = []
+    for kind, page_types in EXPECTED.items():
+        if candidates.get(kind):
+            continue
+        pages = [sid for pt in page_types for sid, t in targets if t == pt][:MAX_FALLBACK_PAGES]
+        out.append({"kind": kind, "open": pages,
+                    "note": "no matching page was crawled" if not pages else "read these pages yourself"})
+    return out
 
 
 def recall(brief: dict, claims: list[dict]) -> dict:

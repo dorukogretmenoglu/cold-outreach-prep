@@ -277,6 +277,35 @@ def normalize_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def repair_snapshot(snap_dir: Path, sid: str) -> str:
+    """Fix a snapshot saved before normalize_newlines. Its hash was taken over text that could hold "\r",
+    and Windows then wrote every "\n" as "\r\n". Undoing exactly that byte change must reproduce the
+    stored hash; only then is the file provably untouched, and it is rewritten with "\n" line ends.
+    Returns "ok" (nothing to do), "repaired" or "mismatch" (content really differs; left as is)."""
+    meta_path = snap_dir / f"{sid}.json"
+    meta = read_json(meta_path)
+    status = "ok"
+    for suffix, key in ((".txt", "sha256"), (".full.txt", "full_sha256")):
+        path = snap_dir / f"{sid}{suffix}"
+        if not meta.get(key) or not path.exists():
+            continue
+        if hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest() == meta[key]:
+            continue
+        original = path.read_bytes().replace(b"\r\n", b"\n")
+        if hashlib.sha256(original).hexdigest() != meta[key]:
+            return "mismatch"
+        text = normalize_newlines(original.decode("utf-8"))
+        path.write_text(text, encoding="utf-8")
+        meta.setdefault("repaired", {})[key] = {"before": meta[key], "at": now_iso()}
+        meta[key] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if key == "sha256":
+            meta["chars"] = len(text)
+        status = "repaired"
+    if status == "repaired":
+        write_json(meta_path, meta)
+    return status
+
+
 def store_page(meta: dict, page, text: str, snap_dir: Path) -> dict:
     """Write the visible layer, the raw HTML and (if different) the hidden layer; fill integrity fields."""
     snap_id = meta["id"]

@@ -21,6 +21,7 @@ LinkedIn: same logic in ≤ the character limit. Observation, question, ask. No 
 - If `[product].stage` is `pilot`, promise no results: no percentages, no ROI, no "X% azaltır".
 - Do not state their internal problems as fact. "İsrafınız çok" is a guess; "yorumlarda akşam ürünlerin tükendiği yazıyor [c004]" is evidence.
 - No flattery you cannot back up ("sektörün lideri", "harika işler").
+- Never cite a complaint that embarrasses the recipient (hygiene, food safety, health, staff behaviour, legal disputes), even if it is verified. A complaint may be mentioned only when it is about the product's problem, and then as a pattern ("yorumlarda akşam ürünlerin tükendiği yazıyor"), never by quoting or naming the complainant.
 - No fake familiarity ("geçen hafta konuşmuştuk"), no false urgency, no fake reply threads (`Re:`).
 - Address the decision maker by name only if a verified `person_title` exists; otherwise use a neutral greeting.
 

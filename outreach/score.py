@@ -7,11 +7,29 @@ from .textnorm import normalize
 DEFAULT_SIGNAL_WEIGHTS = {"job_post": 15, "news": 10, "review": 10, "public_post": 8, "title": 15}
 
 
+def unit_matches(unit: str, units: list[str]) -> bool:
+    """Units are recorded as written ("kişilik taşıma yemek hizmeti kapasitesi"), rules name them short
+    ("kişi kapasitesi"): every word of a rule unit must start a word of the recorded unit."""
+    words = normalize(unit).split()
+    return any(all(any(w.startswith(r) for w in words) for r in normalize(rule).split()) for rule in units)
+
+
 def relevant_people(claims: list[dict], titles: list[str]) -> list[dict]:
     """person_title claims whose verified quote (not the paraphrase) contains a relevant title."""
     wanted = [normalize(t) for t in titles if t.strip()]
     return [c for c in claims if c["type"] == "person_title"
             and any(t in normalize(c["quote"]) for t in wanted)]
+
+
+def size_in_range(count: int | None, unit: str, profile: dict) -> bool | None:
+    """Pre-screen a directory hint against the profile's size rules. None = unknown (don't drop it)."""
+    if count is None:
+        return None
+    rules = profile.get("scoring", {}).get("size", [])
+    for rule in [rules] if isinstance(rules, dict) else rules:
+        if unit_matches(unit, rule.get("units") or [rule.get("unit", "şube")]):
+            return rule.get("min", 0) <= count <= rule.get("max", float("inf"))
+    return None
 
 
 def score_lead(claims: list[dict], profile: dict, today: date) -> dict:
@@ -32,23 +50,27 @@ def score_lead(claims: list[dict], profile: dict, today: date) -> dict:
     size_rules = [size_rules] if isinstance(size_rules, dict) else size_rules
     matched = None
     for rule in size_rules:
-        unit = rule.get("unit", "şube")
+        units = rule.get("units") or [rule.get("unit", "şube")]  # e.g. ["şube", "mağaza", "restoran"]
         for c in claims:
             if c["type"] == rule.get("claim_type", "branch_count") and "value" in c \
-                    and c.get("unit", "şube") == unit:
-                matched = (rule, c, unit)
+                    and unit_matches(c.get("unit", "şube"), units):
+                matched = (rule, c, c.get("unit", "şube"))
                 break
         if matched:
             break
+    size_outside = False
     if matched:
         rule, c, unit = matched
         value = float(str(c["value"]).replace(".", "").replace(",", "."))
         if rule.get("min", 0) <= value <= rule.get("max", float("inf")):
             fit += 15
         else:
-            notes.append(f"büyüklük ({value:g} {unit}) hedef aralığın dışında")
+            size_outside = True
+            notes.append(f"büyüklük ({value:g} {unit}) hedef aralığın dışında ({rule.get('min', 0)}-{rule.get('max', '∞')})")
     else:
-        notes.append("büyüklük bilinmiyor (tahmin edilmedi)")
+        other = [c for c in claims if c["type"] == "branch_count" and "value" in c]
+        notes.append(f"büyüklük birimi ({other[0].get('unit')}) profildeki birimlerle eşleşmedi" if other
+                     else "büyüklük bilinmiyor (tahmin edilmedi)")
 
     signal_claims = [c for c in claims if c.get("signal") in weights]
     by_signal = {}
@@ -80,6 +102,10 @@ def score_lead(claims: list[dict], profile: dict, today: date) -> dict:
     total = fit + signal + timing + reach
     tiers = cfg.get("tiers", {"A": 70, "B": 45})
     tier = "A" if total >= tiers["A"] else "B" if total >= tiers["B"] else "C"
+    cap = cfg.get("size_outside_cap", "C")  # a verified size outside the target range can't be a priority
+    if size_outside and cap and "ABC".index(tier) < "ABC".index(cap):
+        notes.append(f"büyüklük hedef dışında olduğu için öncelik {tier} yerine {cap}")
+        tier = cap
     return {"score": total, "tier": tier, "why_now": why_now, "notes": notes,
             "relevant_people": [c["id"] for c in people],
             "breakdown": {"uyum": fit, "sinyal": signal, "zamanlama": timing, "ulaşılabilirlik": reach}}

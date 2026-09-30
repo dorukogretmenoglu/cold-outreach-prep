@@ -34,7 +34,21 @@ python -m outreach new-run --product <slug>
 python -m outreach discover --run <run>
 ```
 
-**Start with the discovery spider.** `discover` crawls the market catalog's listing pages chosen in the pack's `[discovery].listings` (e.g. complaint-site categories) and writes `runs/<run>/discovery.json`: entities (companies) with their dated items. Keep only entities that fit a segment (a caterer, a restaurant chain); drop banks, apps, public institutions, marketplaces and anything in `[icp].exclude`. For each kept entity find its official domain (WebSearch, restricted to the company name) and `add-lead` with the discovery item as the note and URL. The items are leads, not evidence; the claim comes later from the item's page.
+**Start with the discovery spider.** `discover` crawls the market catalog's listing pages chosen in the pack's `[discovery].listings` and writes `runs/<run>/discovery.json` with two parts:
+
+- `directory`: **who exists.** Companies from directory-type sources (association member lists, chain lists, franchise directories) with a size hint and, when the directory shows it, the website. Each entry has `size_in_range` against the pack's size rules (true / false / null = unknown). This is the main source of candidates.
+- `candidates`: **who has a problem.** Companies mentioned on complaint-style listings, with dated items. Complaint sites over-represent big consumer brands, hotels and public bodies, so use them for signals, not as the candidate list.
+
+Then:
+
+```bash
+python -m outreach promote --run <run>     # directory entries in range or unknown, with a website → leads
+python -m outreach screen --run <run>      # light crawl of every lead, code only: size mentions, team page, emails
+```
+
+For directory entries without a website (`promote` lists them), find the official domain with WebSearch and `add-lead`, taking the domain from a result **link**, never from the search summary text. For complaint candidates that fit a segment, do the same.
+
+Read `runs/<run>/screen.json` and select for deep research the leads whose own site confirms the segment and a size in range, preferring those with a team page or a published email. Record a parent company (e.g. a brand of a large group) as a `company_fact`: decisions for group brands are made centrally, and group-level evidence (e.g. a vendor reference for the parent) matters for exclusions. The items are leads, not evidence; claims come later from the pages themselves.
 
 Then widen with WebSearch using the profile's `[signals]` patterns (vary wording, add city/sector terms). WebSearch is US-centric: for non-US markets, run each query both unrestricted and with `allowed_domains` set to the catalog's `[search].news_domains` (plus `review_sites` for review signals), and follow the catalog's `query_tips`. Do not scrape search engines directly (Google, Bing and Yandex disallow it; DuckDuckGo serves a CAPTCHA to automated clients). For each company that plausibly fits a segment and shows a signal:
 
@@ -59,7 +73,7 @@ python -m outreach crawl --run <run> --lead <id> [--max-pages 25]
 The site spider reads the sitemap (or follows internal links when there is none), picks the evidence-bearing pages (home, about, branches, team, careers, press/blog newest first, sustainability, contact), renders JS pages in a real browser when needed, and saves each as a snapshot (`runs/<run>/crawls/<lead>.json` lists them with their type). It obeys robots.txt, throttles itself, and reports blocked pages instead of retrying them.
 
 1. **Official site:** read the crawled snapshots by type. Only if a needed page is missing (not in the sitemap, not linked) use `fetch` for it, with `--expect <term>` so it escalates to a real browser when the plain request returns an empty shell.
-2. **Signal sources:** the discovery items (`fetch` each relevant complaint/news page; complaint pages carry `dateCreated` in `html_dates`, so use `"date_evidence": "meta:dateCreated"`) plus job posts, news and reviews found by searching the company name. Never record complainants' names; quote only what was said about the service. For reviews, search the pack's `[sources].review_sites` (e.g. `site:sikayetvar.com "<şirket>"`). Never use a domain listed in `[sources].excluded`, by any method. Dated types need `content_date` and `date_evidence`.
+2. **Signal sources:** the discovery items (`fetch` each relevant complaint/news page; complaint pages carry `dateCreated` in `html_dates`, so use `"date_evidence": "meta:dateCreated"`) plus job posts, news and reviews found by searching the company name. Never record complainants' names; quote only what was said about the service. A complaint counts as a `review` signal only when it is about the problem the product solves (`[product].problem`: e.g. portions running out, stockouts, stale or over-produced food, waste). Hygiene, food-safety, health, staff-behaviour, payment or legal complaints are not signals: do not record them, and never use them in a message. Opening a sales email with someone's hygiene complaint is an insult, not a hook. For reviews, search the pack's `[sources].review_sites` (e.g. `site:sikayetvar.com "<şirket>"`). Never use a domain listed in `[sources].excluded`, by any method. Dated types need `content_date` and `date_evidence`.
    - **Sites that block automated reading (e.g. Google Maps reviews):** see "User-supplied sources" below. Do not try other fetchers.
 3. **Segment fit:** one `company_fact` with `"signal": "segment"` quoting what shows they belong to the target segment.
 4. **Size:** `branch_count` with `value` (and `unit` if not şube) from the official site only.

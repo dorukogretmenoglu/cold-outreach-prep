@@ -1,6 +1,6 @@
 import hashlib
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
@@ -185,9 +185,12 @@ def test_manual_snapshot_backs_review_but_not_official_facts(tmp_path):
     meta = save_manual("https://www.google.com/maps/place/acme", "Ayşe K. · 2 gün önce\nAkşam gittik, tatlılar tükenmişti.",
                        tmp_path, "chrome")
     assert meta["ok"] and meta["captured_by"]
+    # "2 gün önce" counts from the capture time, which is now, so neither date can be hard-coded
+    captured = date.fromisoformat(meta["fetched_at"][:10])
     review = claim(type="review", snapshot=meta["id"], statement="Müşteri akşam tatlıların tükendiğini yazmış",
-                   quote="Akşam gittik, tatlılar tükenmişti.", content_date="2026-09-25", date_evidence="2 gün önce")
-    assert check(tmp_path, review) == []
+                   quote="Akşam gittik, tatlılar tükenmişti.", content_date=(captured - timedelta(days=2)).isoformat(),
+                   date_evidence="2 gün önce")
+    assert verify_claim(review, tmp_path, POLICY, captured, lead=LEAD) == []
     meta2 = save_manual("https://acme-lokanta.com.tr/subeler", "Türkiye genelinde 14 şubemizle hizmet veriyoruz.",
                         tmp_path, "manual")
     official = claim(type="branch_count", snapshot=meta2["id"], statement="14 şube",
@@ -307,6 +310,8 @@ def test_unknown_market_fails_loudly(tmp_path, monkeypatch):
     ("https://x.com.tr/subelerimiz/ornek-marka/kadikoy", "branches"),
     ("https://x.com.tr/organizasyon-yapisi", "team"),
     ("https://x.com.tr/organizasyon-ve-davet-yemekleri", None),
+    ("https://x.com.tr/Info/cerez-uyari-yonetim-paneli", None),
+    ("https://x.com.tr/kvkk-aydinlatma-metni", None),
     ("https://x.com.tr/kariyer", "careers"),
     ("https://x.com.tr/iletisim", "contact"),
     ("https://x.com.tr/menu/pizza", None),
@@ -350,6 +355,23 @@ def test_spiders_never_retry_blocked_requests_and_obey_robots():
     assert base.max_blocked_retries == 0 and base.robots_txt_obey is True
 
 
+def test_windows_line_endings_do_not_break_snapshot_hash(tmp_path):
+    from outreach.fetch import save_manual
+    meta = save_manual("https://x.com/a", "Şube listesi\r\nTürkiye genelinde 14 şubemizle\r\nhizmet", tmp_path, "manual")
+    c = claim(type="review", snapshot=meta["id"], statement="x", quote="Türkiye genelinde 14 şubemizle",
+              content_date="2026-09-27", date_evidence="bugün")
+    errors = check(tmp_path, c)
+    assert not any("değiştirilmiş" in e for e in errors)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("30 bin kişi kapasiteli", "30000"), ("2,5 milyon öğün", "2500000"), ("12.000 yemek", "12000"),
+])
+def test_numbers_in_reads_turkish_scale_words(text, expected):
+    from outreach.textnorm import numbers_in
+    assert expected in numbers_in(text)
+
+
 def test_stdin_payload_is_read_as_utf8(monkeypatch):
     import io
     import types
@@ -363,6 +385,183 @@ def test_joined_quote_from_separate_parts_is_rejected(tmp_path):
     make_snapshot(tmp_path)
     joined = claim(type="company_fact", statement="x", quote="Acme Lokanta Kurumsal Genel Müdür: Ayşe Yılmaz")
     assert any("birebir geçmiyor" in e for e in check(tmp_path, joined))
+
+
+def test_directory_entry_from_blocks_table_and_profile():
+    from scrapling.parser import Selector
+    from outreach.crawl import directory_entry
+    block = Selector('<div><h4>Örnek Yemek A</h4><p>Tesisimiz 12.000 yemek/gün kapasiteye sahiptir. '
+                     '<strong>Adres:</strong> Bursa www.ornekyemek-a.com</p></div>')
+    lst = {"id": "b", "unit": "günlük öğün", "name_css": ["h4", "p strong"],
+           "count_regex": r"([\d.]+)\s*(?:yemek|öğün)\s*/\s*gün",
+           "website_regex": r"((?:https?://|www\.)[\w.-]+\.[a-z]{2,})"}
+    e = directory_entry(block, lst, "u")
+    assert (e["entity"], e["count"], e["domain"]) == ("Örnek Yemek A", 12000, "ornekyemek-a.com")
+    no_name = Selector('<div><p><strong>Adres:</strong> x</p></div>')
+    assert directory_entry(no_name, lst, "u") is None                     # a label is not a name
+    row = Selector('<table><tr><td>Örnek Muhallebici [ 3 ]</td><td>x</td><td>21 [ 3 ]</td></tr></table>')
+    e = directory_entry(row.css("tr")[0], {"id": "w", "name_css": "td:nth-child(1)", "count_css": "td:nth-child(3)"}, "u")
+    assert (e["entity"], e["count"]) == ("Örnek Muhallebici", 21)
+    profile = Selector('<body>Marka Adı: ÖRNEK DÖNER Adres: İstanbul Yurtiçi Şube Sayısı: 11 İnternet Sitesi http://www.ornekdoner.com</body>')
+    e = directory_entry(profile, {"id": "u", "name_regex": r"Marka Adı:\s*(.+?)\s+Adres:",
+                                  "count_regex": r"Yurtiçi Şube Sayısı\s*:\s*([\d.]+)",
+                                  "website_regex": r"İnternet Sitesi\s+((?:https?://)?[\w.-]+\.[a-z]{2,})"}, "u")
+    assert (e["entity"], e["count"], e["domain"]) == ("ÖRNEK DÖNER", 11, "ornekdoner.com")
+
+
+@pytest.mark.parametrize("raw,ok", [("21", True), ("12.000", True), ("2024", False), ("1998", False), ("06", False)])
+def test_screen_size_hint_filter(raw, ok):
+    from outreach.__main__ import _plausible_size
+    assert _plausible_size(raw) is ok
+
+
+def test_size_in_range_prescreen():
+    from outreach.score import size_in_range
+    profile = {"scoring": {"size": [{"units": ["şube", "restoran"], "min": 5, "max": 60},
+                                    {"unit": "günlük öğün", "min": 2000, "max": 200000}]}}
+    assert size_in_range(21, "restoran", profile) is True
+    assert size_in_range(300, "restoran", profile) is False
+    assert size_in_range(12000, "günlük öğün", profile) is True
+    assert size_in_range(None, "şube", profile) is None
+    assert size_in_range(10, "firma", profile) is None
+
+
+@pytest.mark.parametrize("sentence", [
+    "Akşam gittik yemekler bize yetmedi.",
+    "Saat 13'te yemek yoktu, bitti dediler.",
+    "Vitrinde tatlı kalmamıştı.",
+    "Sipariş ettiğim ürün stokta yokmuş.",
+    "Simit bayattı.",
+    "Öğlen gittiğimizde ana yemek tükenmişti.",
+    "Yemekhanede yemek yetersiz çıktı, herkese yetişmedi.",
+])
+def test_problem_net_catches_paraphrases(sentence):
+    from outreach.brief import page_candidates
+    cands = page_candidates(sentence, "s1", "extra", "x.com", [])
+    assert any(c["kind"] == "problem" and c["rank"] == 0 for c in cands)
+
+
+def test_problem_net_is_wide_on_purpose_model_decides():
+    from outreach.brief import page_candidates
+    # a portion-size complaint is caught (weak) so a model can reject it; it is not a stockout
+    cands = page_candidates("Porsiyonlar çok küçüktü.", "s1", "extra", "x.com", [])
+    assert [c["rank"] for c in cands if c["kind"] == "problem"] == [1]
+
+
+def test_brief_finds_parent_group_listing_and_keeps_exact_spans():
+    from outreach.brief import page_candidates
+    text = "Hakkımızda\nÖrnek Grup Şirketleri\nÖrnek Et\nÖrnek Lokantacılık\nİletişim"
+    parent = [c for c in page_candidates(text, "s1", "about", "x.com", []) if c["kind"] == "parent"]
+    assert parent and "Örnek Lokantacılık" in parent[0]["quote"]
+    long_line = "Kısa giriş cümlesi. " + "Uzun bir açıklama cümlesi burada devam ediyor. " * 8 + "Bugün 21 şubemizle hizmet veriyoruz."
+    sizes = [c for c in page_candidates(long_line, "s1", "about", "x.com", []) if c["kind"] == "size"]
+    assert sizes and sizes[0]["quote"] == "Bugün 21 şubemizle hizmet veriyoruz." and sizes[0]["quote"] in long_line
+
+
+def test_branch_target_is_not_a_count_even_when_the_quote_cuts_the_verb(tmp_path):
+    text = "Bugün\n88 şubesi\nile müşterileriyle buluşan marka,\n2026 yılı sonuna kadar 100 şubeye\nulaşmayı hedefliyor."
+    make_snapshot(tmp_path, text=text)
+    target = claim(type="branch_count", statement="100 şube", quote="2026 yılı sonuna kadar 100 şubeye", value=100)
+    assert any("hedef" in e for e in check(tmp_path, target))
+    cut = claim(type="branch_count", statement="100 şube", quote="100 şubeye", value=100)
+    assert any("hedef" in e for e in check(tmp_path, cut))
+    actual = claim(type="branch_count", statement="88 şube", quote="88 şubesi", value=88, unit="şube")
+    assert check(tmp_path, actual) == []
+
+
+def test_headcount_is_not_a_branch_count(tmp_path):
+    make_snapshot(tmp_path, text="Yeni fabrikamızda 150 kişilik bir ekiple çalışıyoruz.")
+    c = claim(type="branch_count", statement="150 kişilik ekip", quote="150 kişilik bir ekiple", value=150,
+              unit="kişilik ekip")
+    assert any("çalışan" in e for e in check(tmp_path, c))
+
+
+def test_cloudflare_hidden_email_gets_its_own_reason(tmp_path):
+    make_snapshot(tmp_path, text="İletişim\nE-posta: [email protected]\nTelefon")
+    c = claim(type="contact", statement="e-posta", quote="E-posta: [email protected]", email="info@acme-lokanta.com.tr")
+    assert any("Cloudflare" in e for e in check(tmp_path, c))
+
+
+def test_units_as_written_match_short_profile_units():
+    from outreach.score import unit_matches
+    assert unit_matches("kişilik taşıma yemek hizmeti kapasitesi", ["günlük öğün", "kişi kapasitesi"])
+    assert unit_matches("şubemiz", ["şube"]) and unit_matches("noktaya", ["nokta"])
+    assert not unit_matches("kişilik ekip", ["kişi kapasitesi"])
+    assert not unit_matches("öğün", ["günlük öğün"])
+
+
+def test_size_net_takes_synonyms_and_profile_units():
+    from outreach.brief import page_candidates, size_pattern
+    sizes = [c for c in page_candidates("Şehrin dört bir yanında 18 mekanımız var.", "s1", "about", "x.com", [])
+             if c["kind"] == "size"]
+    assert sizes
+    text = "Bugün 9 otelimizde misafir ağırlıyoruz."
+    assert not [c for c in page_candidates(text, "s1", "about", "x.com", []) if c["kind"] == "size"]
+    own = page_candidates(text, "s1", "about", "x.com", [], size_pattern(["otel"]))
+    assert [c for c in own if c["kind"] == "size"]
+
+
+def _brief_run(tmp_path, pages):
+    from outreach.config import write_json
+    (tmp_path / "snapshots").mkdir()
+    (tmp_path / "crawls").mkdir()
+    for sid, ptype, text in pages:
+        (tmp_path / "snapshots" / f"{sid}.txt").write_text(text, encoding="utf-8")
+        write_json(tmp_path / "snapshots" / f"{sid}.json", {"id": sid, "ok": True})
+    write_json(tmp_path / "crawls" / "acme.json",
+               {"pages": [{"snapshot": sid, "type": ptype, "ok": True} for sid, ptype, _ in pages]})
+
+
+def test_brief_raises_alarm_for_empty_expected_kinds_and_names_pages(tmp_path):
+    from outreach.brief import build_brief
+    _brief_run(tmp_path, [("s1", "about", "Acme Lokanta 1998'den beri lezzet sunuyor."),
+                          ("s2", "branches", "Kadıköy / Beşiktaş / Ataşehir"),
+                          ("s3", "contact", "İletişim: info@acme-lokanta.com.tr")])
+    brief = build_brief(tmp_path, LEAD, {})
+    missing = {m["kind"]: m for m in brief["missing"]}
+    assert set(missing) == {"size", "person"}          # contact was found, so no alarm for it
+    assert missing["size"]["open"] == ["s2", "s1"]      # branches page first, then about
+    assert missing["person"]["open"] == ["s1"] and "team" not in missing["person"]["note"]
+
+
+def test_brief_alarm_says_when_no_page_to_open(tmp_path):
+    from outreach.brief import build_brief
+    _brief_run(tmp_path, [("s1", "press", "Yeni menümüz yayında.")])
+    missing = {m["kind"]: m for m in build_brief(tmp_path, LEAD, {})["missing"]}
+    assert missing["contact"]["open"] == [] and "no matching page" in missing["contact"]["note"]
+
+
+def _legacy_snapshot(tmp_path, text):
+    """What the pre-fix code did: hash the text in memory, then Windows wrote every LF as CRLF."""
+    sid = make_snapshot(tmp_path, text="placeholder")
+    meta = json.loads((tmp_path / f"{sid}.json").read_text(encoding="utf-8"))
+    meta["sha256"] = hashlib.sha256(text.encode()).hexdigest()
+    (tmp_path / f"{sid}.json").write_text(json.dumps(meta), encoding="utf-8")
+    (tmp_path / f"{sid}.txt").write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+    return sid
+
+
+def test_legacy_snapshot_is_repaired_only_when_bytes_prove_it_untouched(tmp_path):
+    from outreach.fetch import repair_snapshot
+    text = PAGE.replace("Kurumsal\n", "Kurumsal\r\n")   # the page itself carried a Windows line end
+    sid = _legacy_snapshot(tmp_path, text)
+    c = claim(type="branch_count", statement="14 şubesi var", quote="Türkiye genelinde 14 şubemizle", value=14)
+    assert any("değiştirilmiş" in e for e in check(tmp_path, c))
+    assert repair_snapshot(tmp_path, sid) == "repaired"
+    assert check(tmp_path, c) == []
+    assert repair_snapshot(tmp_path, sid) == "ok"
+    meta = json.loads((tmp_path / f"{sid}.json").read_text(encoding="utf-8"))
+    assert meta["repaired"]["sha256"]["before"] == hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_tampered_legacy_snapshot_is_not_repaired(tmp_path):
+    from outreach.fetch import repair_snapshot
+    sid = _legacy_snapshot(tmp_path, PAGE.replace("Kurumsal\n", "Kurumsal\r\n"))
+    path = tmp_path / f"{sid}.txt"
+    path.write_bytes(path.read_bytes().replace(b"14 ", b"41 "))
+    assert repair_snapshot(tmp_path, sid) == "mismatch"
+    c = claim(type="branch_count", statement="41 şubesi var", quote="Türkiye genelinde 41 şubemizle", value=41)
+    assert any("değiştirilmiş" in e for e in check(tmp_path, c))
 
 
 # ---------- drafts ----------
@@ -428,6 +627,22 @@ def test_csv_neutralizes_formula_injection():
     row.update({"Şirket": '=HYPERLINK("http://evil","x")', "Notlar": "-1+2", "Mesaj": "normal"})
     parsed = next(_csv.DictReader(_io.StringIO(to_csv([row]))))
     assert parsed["Şirket"].startswith("'=") and parsed["Notlar"] == "'-1+2" and parsed["Mesaj"] == "normal"
+
+
+def test_carry_over_keeps_user_status_and_earlier_leads_but_not_auto_status():
+    from outreach.export import build
+    leads = [{"id": "a", "name": "A", "domain": "a.com", "status": "selected"}]
+    scores = {"a": {"tier": "C", "score": 30, "breakdown": {}, "notes": []}}
+    carry = {
+        "a.com": {"Site": "a.com", "Durum": "Taslak yazılmadı (öncelik B)", "Notlar": "benim notum"},
+        "old.com": {"Site": "old.com", "Şirket": "Old", "Öncelik": "B", "Skor": "53", "Durum": "Gönderildi 28.09"},
+    }
+    rows, _, _ = build(leads, [], [], [], scores, [], carry)
+    by_site = {r["Site"]: r for r in rows}
+    assert by_site["a.com"]["Durum"] == "Taslak yazılmadı (öncelik C)"   # auto status recomputed
+    assert by_site["a.com"]["Notlar"] == "benim notum"                    # user's note kept
+    assert by_site["old.com"]["Durum"] == "Gönderildi 28.09"              # earlier run's lead kept
+    assert [r["Site"] for r in rows] == ["old.com", "a.com"]              # B before C
 
 
 def test_review_invalidated_when_draft_changes():
@@ -497,6 +712,21 @@ def test_title_signal_off_when_weight_missing():
     profile = {"scoring": {"relevant_titles": ["maliyet kontrol"], "signal_weights": {"job_post": 15}}}
     c = {"id": "c1", "type": "person_title", "statement": "x", "quote": "Maliyet Kontrol Müdürü"}
     assert score_lead([c], profile, TODAY)["breakdown"]["sinyal"] == 0
+
+
+def test_size_unit_synonyms_and_out_of_range_cap():
+    profile = {"scoring": {"size": [{"units": ["şube", "mağaza"], "min": 5, "max": 60}],
+                           "signal_weights": {"review": 10}}}
+    big_chain = [{"id": "c1", "type": "branch_count", "unit": "mağaza", "value": 300, "statement": "x"},
+                 {"id": "c2", "type": "company_fact", "signal": "segment", "statement": "zincir"},
+                 {"id": "c3", "type": "review", "signal": "review", "statement": "stok yok", "content_date": "2026-09-26"}]
+    s = score_lead(big_chain, profile, TODAY)
+    assert s["score"] >= 45 and s["tier"] == "C"            # points say B, size says no
+    assert any("hedef aralığın" in n for n in s["notes"])
+    in_range = [dict(big_chain[0], value=12)] + big_chain[1:]
+    assert score_lead(in_range, profile, TODAY)["tier"] == "B"
+    odd_unit = [dict(big_chain[0], unit="nokta")]
+    assert any("eşleşmedi" in n for n in score_lead(odd_unit, profile, TODAY)["notes"])
 
 
 def test_disqualifier_eliminates_lead():

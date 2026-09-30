@@ -140,6 +140,25 @@ def _check_date(claim: dict, src: Source, rule: dict, today: date) -> list[str]:
     return errors
 
 
+# A branch_count is a current count. These words near the quote mean a plan or a headcount instead.
+_TARGET_WORDS = ["hedef", "sonuna kadar", "ulaşmayı", "planlıyor", "planlanan", "açılacak", "açmayı", "target",
+                 "by the end of", "aims to", "plans to"]
+_NOT_SIZE_UNITS = ["ekip", "çalışan", "personel", "istihdam", "employee", "staff"]
+
+
+def _size_misuse(claim: dict, src: Source, quote: str) -> list[str]:
+    errors = []
+    if any(w in normalize(claim.get("unit", "")) for w in _NOT_SIZE_UNITS):
+        errors.append("çalışan sayısı şube ya da kapasite değildir; company_fact olarak kaydet")
+    text, q = normalize(src.text + "\n" + src.full_text), normalize(quote)
+    at = text.find(q)
+    # look just around the quote, so a cut quote ("100 şubeye" without "hedefliyor") can't hide the plan
+    window = text[max(0, at - 25): at + len(q) + 40] if at >= 0 else q
+    if any(w in window for w in _TARGET_WORDS):
+        errors.append("bu sayı bir hedef/plan, mevcut şube sayısı değil; company_fact olarak kaydet")
+    return errors
+
+
 def verify_claim(claim: dict, snap_dir: Path, policy: dict, today: date,
                  lead: dict | None = None, own_domain: str | None = None,
                  excluded: list[dict] | None = None) -> list[str]:
@@ -193,9 +212,13 @@ def verify_claim(claim: dict, snap_dir: Path, policy: dict, today: date,
         errors.append(f"iddiadaki sayılar alıntıda yok: {sorted(extra)}")
     if "value" in claim and str(claim["value"]).replace(".", "").replace(",", "") not in numbers_in(quote):
         errors.append(f"value={claim['value']} alıntıda geçmiyor")
+    if type_ == "branch_count":
+        errors += _size_misuse(claim, src, quote)
     if type_ == "contact":
         emails = set(_EMAIL.findall(quote))
-        if not emails:
+        if "email protected" in normalize(quote):
+            errors.append("e-posta Cloudflare ile gizlenmiş; çözülmez ve tahmin edilmez, kanal iletişim formu olur")
+        elif not emails:
             errors.append("contact türü alıntıda yayınlanmış bir e-posta içermeli")
         elif claim.get("email") and claim["email"].lower() not in {e.lower() for e in emails}:
             errors.append("email alanı alıntıdaki adresle aynı değil")

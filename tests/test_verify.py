@@ -458,6 +458,38 @@ def test_brief_finds_parent_group_listing_and_keeps_exact_spans():
     assert sizes and sizes[0]["quote"] == "Bugün 21 şubemizle hizmet veriyoruz." and sizes[0]["quote"] in long_line
 
 
+def test_branch_target_is_not_a_count_even_when_the_quote_cuts_the_verb(tmp_path):
+    text = "Bugün\n88 şubesi\nile müşterileriyle buluşan marka,\n2026 yılı sonuna kadar 100 şubeye\nulaşmayı hedefliyor."
+    make_snapshot(tmp_path, text=text)
+    target = claim(type="branch_count", statement="100 şube", quote="2026 yılı sonuna kadar 100 şubeye", value=100)
+    assert any("hedef" in e for e in check(tmp_path, target))
+    cut = claim(type="branch_count", statement="100 şube", quote="100 şubeye", value=100)
+    assert any("hedef" in e for e in check(tmp_path, cut))
+    actual = claim(type="branch_count", statement="88 şube", quote="88 şubesi", value=88, unit="şube")
+    assert check(tmp_path, actual) == []
+
+
+def test_headcount_is_not_a_branch_count(tmp_path):
+    make_snapshot(tmp_path, text="Yeni fabrikamızda 150 kişilik bir ekiple çalışıyoruz.")
+    c = claim(type="branch_count", statement="150 kişilik ekip", quote="150 kişilik bir ekiple", value=150,
+              unit="kişilik ekip")
+    assert any("çalışan" in e for e in check(tmp_path, c))
+
+
+def test_cloudflare_hidden_email_gets_its_own_reason(tmp_path):
+    make_snapshot(tmp_path, text="İletişim\nE-posta: [email protected]\nTelefon")
+    c = claim(type="contact", statement="e-posta", quote="E-posta: [email protected]", email="info@acme-lokanta.com.tr")
+    assert any("Cloudflare" in e for e in check(tmp_path, c))
+
+
+def test_units_as_written_match_short_profile_units():
+    from outreach.score import unit_matches
+    assert unit_matches("kişilik taşıma yemek hizmeti kapasitesi", ["günlük öğün", "kişi kapasitesi"])
+    assert unit_matches("şubemiz", ["şube"]) and unit_matches("noktaya", ["nokta"])
+    assert not unit_matches("kişilik ekip", ["kişi kapasitesi"])
+    assert not unit_matches("öğün", ["günlük öğün"])
+
+
 def test_size_net_takes_synonyms_and_profile_units():
     from outreach.brief import page_candidates, size_pattern
     sizes = [c for c in page_candidates("Şehrin dört bir yanında 18 mekanımız var.", "s1", "about", "x.com", [])

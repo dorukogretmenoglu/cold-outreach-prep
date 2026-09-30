@@ -7,6 +7,13 @@ from .textnorm import normalize
 DEFAULT_SIGNAL_WEIGHTS = {"job_post": 15, "news": 10, "review": 10, "public_post": 8, "title": 15}
 
 
+def unit_matches(unit: str, units: list[str]) -> bool:
+    """Units are recorded as written ("kişilik taşıma yemek hizmeti kapasitesi"), rules name them short
+    ("kişi kapasitesi"): every word of a rule unit must start a word of the recorded unit."""
+    words = normalize(unit).split()
+    return any(all(any(w.startswith(r) for w in words) for r in normalize(rule).split()) for rule in units)
+
+
 def relevant_people(claims: list[dict], titles: list[str]) -> list[dict]:
     """person_title claims whose verified quote (not the paraphrase) contains a relevant title."""
     wanted = [normalize(t) for t in titles if t.strip()]
@@ -20,7 +27,7 @@ def size_in_range(count: int | None, unit: str, profile: dict) -> bool | None:
         return None
     rules = profile.get("scoring", {}).get("size", [])
     for rule in [rules] if isinstance(rules, dict) else rules:
-        if unit in (rule.get("units") or [rule.get("unit", "şube")]):
+        if unit_matches(unit, rule.get("units") or [rule.get("unit", "şube")]):
             return rule.get("min", 0) <= count <= rule.get("max", float("inf"))
     return None
 
@@ -46,7 +53,7 @@ def score_lead(claims: list[dict], profile: dict, today: date) -> dict:
         units = rule.get("units") or [rule.get("unit", "şube")]  # e.g. ["şube", "mağaza", "restoran"]
         for c in claims:
             if c["type"] == rule.get("claim_type", "branch_count") and "value" in c \
-                    and c.get("unit", "şube") in units:
+                    and unit_matches(c.get("unit", "şube"), units):
                 matched = (rule, c, c.get("unit", "şube"))
                 break
         if matched:

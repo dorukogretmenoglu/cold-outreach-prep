@@ -9,6 +9,8 @@ COLUMNS = ["Öncelik", "Skor", "Skor kırılımı", "Şirket", "Site", "Neden ş
            "Karar verici", "E-posta", "Kanal", "Konu", "Mesaj", "Kaynaklar", "Doğrulama",
            "Durum", "Sonraki adım", "Notlar"]
 USER_OWNED = ("Durum", "Sonraki adım", "Notlar")
+# Statuses the tool writes itself; only anything else in "Durum" is the user's own and carried over.
+AUTO_STATUS_PREFIXES = ("Taslak - onayını bekliyor", "Kontrol gerekli", "Taslak yazılmadı", "Elendi")
 TIER_ORDER = {"A": 0, "B": 1, "C": 2, "X": 3}
 
 
@@ -103,8 +105,9 @@ def build(leads: list[dict], claims: list[dict], kb_claims: list[dict], drafts: 
         previous = (carry_over or {}).get(row["Site"])
         if previous:
             for col in USER_OWNED:
-                if previous.get(col):
-                    row[col] = previous[col]
+                value = previous.get(col, "")
+                if value and not (col == "Durum" and value.startswith(AUTO_STATUS_PREFIXES)):
+                    row[col] = value
         rows.append(row)
 
         marked = f"{draft.get('subject', '')}\n\n{draft.get('body', '')}"
@@ -120,7 +123,18 @@ def build(leads: list[dict], claims: list[dict], kb_claims: list[dict], drafts: 
         if ready and draft.get("channel") == "email" and draft.get("to"):
             gmail.append({"lead": lid, "to": draft["to"], "subject": row["Konu"], "body": row["Mesaj"]})
 
-    rows.sort(key=lambda r: (TIER_ORDER.get(r["Öncelik"], 9), -(r["Skor"] or 0)))
+    # The sheet is a tracker across runs: leads from earlier runs that this run didn't touch stay as they were.
+    current = {r["Site"] for r in rows}
+    for site, previous in (carry_over or {}).items():
+        if site not in current:
+            rows.append({col: previous.get(col, "") for col in COLUMNS})
+
+    def _score(r):
+        try:
+            return -float(r["Skor"])
+        except (TypeError, ValueError):
+            return 0.0
+    rows.sort(key=lambda r: (TIER_ORDER.get(r["Öncelik"], 9), _score(r)))
     return rows, reviews, gmail
 
 

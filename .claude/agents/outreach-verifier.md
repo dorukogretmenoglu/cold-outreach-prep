@@ -32,6 +32,7 @@ For every cited claim, open the snapshot text around the quote and check:
 For the message as a whole:
 4. **Uncited facts:** Any factual statement without a marker, including implied ones ("sizin gibi büyük bir zincir", "israfınız yüksek").
 5. **Overclaiming the product:** Results, percentages or capabilities not in cited `k…` claims; any promised outcome when the product stage is `pilot`.
+5b. **Embarrassing evidence:** Fail any message that cites or alludes to a hygiene, food-safety, health, staff-behaviour or legal complaint, or that names or quotes a complainant.
 6. **Tone and risk:** Flattery that cannot be backed up, fake familiarity, pressure, clickbait subject, diagnosing their problems as fact, generic AI-sounding filler, over the length limit.
 7. **Recipient:** `to` must appear in a verified `contact` claim quote for this lead.
 

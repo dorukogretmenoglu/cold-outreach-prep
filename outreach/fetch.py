@@ -187,7 +187,7 @@ def save_manual(url: str, text: str, snap_dir: Path, method: str, excluded: list
         raise ValueError("geçerli bir URL gerekli: kaynak her zaman bir sayfaya bağlı olmalı")
     snap_dir.mkdir(parents=True, exist_ok=True)
     snap_id = _next_id(snap_dir)
-    text = text.strip()
+    text = normalize_newlines(text).strip()   # pasted text from Windows carries "\r\n"
     meta = {"id": snap_id, "url": url, "domain": _domain(url), "final_url": url, "final_domain": _domain(url),
             "fetched_at": now_iso(), "method": method, "captured_by": MANUAL_METHODS[method],
             "chars": len(text), "html_dates": {}, "ok": False}
@@ -271,14 +271,50 @@ def fetch(url: str, snap_dir: Path, expect: list[str] | None = None, min_chars: 
     return meta
 
 
+def normalize_newlines(text: str) -> str:
+    # On Windows, write_text turns "\r\n" into "\r\r\n", which read_text then reads differently,
+    # so a snapshot would fail its own hash check. Store "\n" only.
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def repair_snapshot(snap_dir: Path, sid: str) -> str:
+    """Fix a snapshot saved before normalize_newlines. Its hash was taken over text that could hold "\r",
+    and Windows then wrote every "\n" as "\r\n". Undoing exactly that byte change must reproduce the
+    stored hash; only then is the file provably untouched, and it is rewritten with "\n" line ends.
+    Returns "ok" (nothing to do), "repaired" or "mismatch" (content really differs; left as is)."""
+    meta_path = snap_dir / f"{sid}.json"
+    meta = read_json(meta_path)
+    status = "ok"
+    for suffix, key in ((".txt", "sha256"), (".full.txt", "full_sha256")):
+        path = snap_dir / f"{sid}{suffix}"
+        if not meta.get(key) or not path.exists():
+            continue
+        if hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest() == meta[key]:
+            continue
+        original = path.read_bytes().replace(b"\r\n", b"\n")
+        if hashlib.sha256(original).hexdigest() != meta[key]:
+            return "mismatch"
+        text = normalize_newlines(original.decode("utf-8"))
+        path.write_text(text, encoding="utf-8")
+        meta.setdefault("repaired", {})[key] = {"before": meta[key], "at": now_iso()}
+        meta[key] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if key == "sha256":
+            meta["chars"] = len(text)
+        status = "repaired"
+    if status == "repaired":
+        write_json(meta_path, meta)
+    return status
+
+
 def store_page(meta: dict, page, text: str, snap_dir: Path) -> dict:
     """Write the visible layer, the raw HTML and (if different) the hidden layer; fill integrity fields."""
     snap_id = meta["id"]
+    text = normalize_newlines(text)
     meta.update(final_url=page.url, final_domain=_domain(page.url), status=page.status, chars=len(text),
                 sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(), html_dates=extract_html_dates(page))
     (snap_dir / f"{snap_id}.txt").write_text(text, encoding="utf-8")
     (snap_dir / f"{snap_id}.html").write_text(str(page.html_content), encoding="utf-8")
-    full = _full_text(page)
+    full = normalize_newlines(_full_text(page))
     if len(full) > len(text):
         meta["full_chars"] = len(full)
         meta["full_sha256"] = hashlib.sha256(full.encode("utf-8")).hexdigest()

@@ -8,7 +8,7 @@ from pathlib import Path
 from . import export as exp
 from .config import (PRODUCTS, RUNS, find_chrome, load_profile, locked, now_iso, product_dir, read_json,
                      read_jsonl, run_dir, today, write_json, write_jsonl)
-from .fetch import fetch, save_manual
+from .fetch import fetch, repair_snapshot, save_manual
 from .kb import search
 from .score import score_lead
 from .verify import KB_TYPES, LEAD_TYPES, build_policy, check_draft, verify_claim
@@ -174,12 +174,104 @@ def cmd_discover(args):
     if unknown or not wanted:
         raise SystemExit(f"profilde [discovery].listings eksik ya da bilinmeyen: {unknown or '-'}; "
                          f"katalogdakiler: {sorted(catalog)}")
+    from .score import size_in_range
+
     result = discover([catalog[w] for w in wanted], excluded=_excluded(profile))
+    for e in result["directory"]:
+        e["size_in_range"] = size_in_range(e["count"], e["unit"], profile)
     write_json(rdir / "discovery.json", result)
-    _out({"aday_sayısı": len(result["candidates"]), "engellenen": result["blocked"],
-          "atlanan": result["skipped_listings"], "dosya": str(rdir / "discovery.json"),
-          "ilk_20": [{"entity": c["entity"], "count": c["count"],
-                      "son": c["items"][0]["date_text"] if c["items"] else ""} for c in result["candidates"][:20]]})
+    directory = result["directory"]
+    _out({"şikayet_kaynaklı_aday": len(result["candidates"]),
+          "rehber_kaydı": len(directory),
+          "rehber_aralıkta": sum(e["size_in_range"] is True for e in directory),
+          "rehber_aralık_dışı": sum(e["size_in_range"] is False for e in directory),
+          "rehber_büyüklük_bilinmiyor": sum(e["size_in_range"] is None for e in directory),
+          "engellenen": result["blocked"], "atlanan": result["skipped_listings"],
+          "dosya": str(rdir / "discovery.json")})
+
+
+def cmd_promote(args):
+    """Directory entries that may fit (size in range or unknown) and whose website the directory shows become leads."""
+    rdir, _, _ = _run_ctx(args.run)
+    discovery = read_json(rdir / "discovery.json")
+    leads = read_jsonl(rdir / "leads.jsonl")
+    known = {l["domain"] for l in leads}
+    added, skipped = [], []
+    for e in discovery.get("directory", []):
+        if e.get("size_in_range") is False:
+            continue
+        if not e.get("domain"):
+            skipped.append(e["entity"])      # domain must be looked up, never guessed
+            continue
+        if e["domain"] in known:
+            continue
+        lid, n = _slug(e["entity"]), 2
+        while any(l["id"] == lid for l in leads):
+            lid, n = f"{_slug(e['entity'])}-{n}", n + 1
+        hint = f"{e['count']} {e['unit']}" if e.get("count") else "büyüklük belirtilmemiş"
+        leads.append({"id": lid, "name": e["entity"], "domain": e["domain"], "status": "candidate",
+                      "discovery_note": f"Rehber ({e['source']}): {hint} (ipucu, kanıt değil)",
+                      "discovery_url": e["url"], "added_at": now_iso()})
+        known.add(e["domain"])
+        added.append(lid)
+    write_jsonl(rdir / "leads.jsonl", leads)
+    _out({"eklenen": len(added), "alan_adı_aranacak": skipped})
+
+
+_SIZE_HINT = re.compile(r"(\d{1,3}(?:[.,]\d{3})*|\d+)\s*(şube|restoran|mağaza|lokasyon|noktada|yemek\s*/\s*gün|öğün)", re.I)
+_EMAIL_HINT = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+
+def _plausible_size(raw: str) -> bool:
+    """Drop years ("2024 şube") and fragments of phone numbers or codes ("06 Şube")."""
+    if raw.startswith("0"):
+        return False
+    n = int(re.sub(r"[.,]", "", raw))
+    return not 1900 <= n <= 2099
+
+
+def _screen_one(run_id: str, lead_id: str, max_pages: int) -> tuple[str, int, str]:
+    import subprocess
+    r = subprocess.run([sys.executable, "-m", "outreach", "crawl", "--run", run_id, "--lead", lead_id,
+                        "--max-pages", str(max_pages)], capture_output=True)
+    return lead_id, r.returncode, r.stderr.decode("utf-8", errors="replace")[-300:]
+
+
+def cmd_screen(args):
+    """Cheap, code-only pre-screen: crawl each lead lightly (several at once) and summarise what the site states."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    rdir, _, profile = _run_ctx(args.run)
+    leads = [l for l in read_jsonl(rdir / "leads.jsonl") if l["status"] != "dropped"]
+    todo = [l["id"] for l in leads if not (rdir / "crawls" / f"{l['id']}.json").exists()]
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        errors = {lid: err for lid, code, err in pool.map(lambda i: _screen_one(args.run, i, args.max_pages), todo) if code}
+    report = []
+    for l in leads:
+        crawl_path = rdir / "crawls" / f"{l['id']}.json"
+        crawl = read_json(crawl_path) if crawl_path.exists() else {"pages": [], "error": errors.get(l["id"], "taranmadı")}
+        texts = [(rdir / "snapshots" / f"{p['snapshot']}.txt").read_text(encoding="utf-8")
+                 for p in crawl.get("pages", []) if p.get("ok")]
+        blob = "\n".join(texts)
+        sizes = list(dict.fromkeys(" ".join(m.group(0).split()) for m in _SIZE_HINT.finditer(blob)
+                                   if _plausible_size(m.group(1))))[:4]
+        emails = sorted({e.lower() for e in _EMAIL_HINT.findall(blob) if l["domain"].split(".")[0] in e.lower()})[:3]
+        types = sorted({p["type"] for p in crawl.get("pages", []) if p.get("ok") and p.get("type")})
+        error = crawl.get("error") or (errors.get(l["id"]) if not texts else None)
+        if not texts and not error:
+            if crawl.get("blocked"):
+                error = "site otomatik erişimi engelliyor (atlatılmaz)"
+            elif crawl.get("failed"):
+                f = crawl["failed"][0]
+                error = f"sayfa alınamadı: {f.get('status') or f.get('error', '')}"[:120]
+            elif crawl.get("pages"):
+                error = "içerik alınamadı (site boş ya da tek sayfalık bir giriş ekranı)"
+        report.append({"lead": l["id"], "name": l["name"], "ok_pages": len(texts), "page_types": types,
+                       "size_mentions": sizes, "emails": emails, "has_team_page": "team" in types,
+                       "error": error})
+    write_json(rdir / "screen.json", {"leads": report})
+    _out({"taranan": len(todo), "hata": len(errors), "dosya": str(rdir / "screen.json"),
+          "özet": [{k: r[k] for k in ("lead", "ok_pages", "size_mentions", "has_team_page", "emails")} for r in report]})
 
 
 def cmd_add_snapshot(args):
@@ -270,6 +362,55 @@ def cmd_retract_claim(args):
     target.update(status="retracted", retracted_reason=args.reason, retracted_at=now_iso())
     write_jsonl(path, claims)
     _out({"id": args.id, "status": "retracted"})
+
+
+def cmd_add_claims(args):
+    """Record many claims in one call (one lock, one verification pass). Output stays compact."""
+    rdir, _, profile = _run_ctx(args.run)
+    batch = _payload(args)
+    if not isinstance(batch, list):
+        raise SystemExit("JSON listesi bekleniyor: [{...}, {...}]")
+    leads = {l["id"]: l for l in read_jsonl(rdir / "leads.jsonl")}
+    claims = read_jsonl(rdir / "claims.jsonl")
+    results = []
+    for claim in batch:
+        if claim.get("lead") not in leads or claim.get("type") not in LEAD_TYPES:
+            results.append({"statement": str(claim.get("statement", ""))[:60], "error": "geçersiz lead ya da tür"})
+            continue
+        claim["id"] = f"c{len(claims) + 1:03d}"
+        claim["added_at"] = now_iso()
+        _verify_all([claim], rdir / "snapshots", profile, leads)
+        claims.append(claim)
+        results.append({"id": claim["id"], "status": claim["status"], **({"errors": claim["errors"]} if claim["errors"] else {})})
+    write_jsonl(rdir / "claims.jsonl", claims)
+    _out(results)
+
+
+def cmd_repair_snapshots(args):
+    """Re-save snapshots written before the line-ending fix, only when their bytes prove them untouched."""
+    snap_dir = run_dir(args.run) / "snapshots"
+    result = {"repaired": [], "mismatch": [], "ok": 0}
+    for meta_path in sorted(snap_dir.glob("s*.json")):
+        if not read_json(meta_path).get("ok"):
+            continue
+        status = repair_snapshot(snap_dir, meta_path.stem)
+        if status == "ok":
+            result["ok"] += 1
+        else:
+            result[status].append(meta_path.stem)
+    _out(result)
+
+
+def cmd_brief(args):
+    from .brief import build_brief
+
+    rdir, _, profile = _run_ctx(args.run)
+    leads = {l["id"]: l for l in read_jsonl(rdir / "leads.jsonl")}
+    if args.lead not in leads:
+        raise SystemExit(f"bilinmeyen lead: {args.lead}")
+    brief = build_brief(rdir, leads[args.lead], profile, extra_snapshots=args.extra or [])
+    write_json(rdir / "briefs" / f"{args.lead}.json", brief)
+    _out(brief)
 
 
 def cmd_add_draft(args):
@@ -375,12 +516,26 @@ def main(argv=None):
     s.add_argument("--max-pages", type=int, default=25); s.set_defaults(fn=cmd_crawl)
     s = sub.add_parser("discover", help="katalogdaki liste sayfalarını spider ile tara, aday şirketleri çıkar")
     s.add_argument("--run", required=True); s.set_defaults(fn=cmd_discover)
+    s = sub.add_parser("promote", help="rehber kayıtlarından (aralıkta ya da büyüklüğü bilinmeyen, sitesi belli) aday oluştur")
+    s.add_argument("--run", required=True); s.set_defaults(fn=cmd_promote)
+    s = sub.add_parser("screen", help="adayları hafif spider taramasıyla ön ele (sadece kod, yapay zeka yok)")
+    s.add_argument("--run", required=True); s.add_argument("--max-pages", type=int, default=8)
+    s.add_argument("--workers", type=int, default=4); s.set_defaults(fn=cmd_screen)
     s = sub.add_parser("add-snapshot", help="kullanıcının verdiği ya da Chrome'unda okunan metni kaynak olarak kaydet (stdin)")
     s.add_argument("--url", required=True); s.add_argument("--method", choices=["manual", "chrome"], required=True)
     s.add_argument("--run"); s.add_argument("--product"); s.set_defaults(fn=cmd_add_snapshot)
     for name, fn in (("add-claim", cmd_add_claim), ("add-draft", cmd_add_draft)):
         s = sub.add_parser(name); s.add_argument("--run"); s.add_argument("--product")
         s.add_argument("--json"); s.add_argument("--stdin", action="store_true"); s.set_defaults(fn=fn)
+    s = sub.add_parser("add-claims", help="bir JSON listesiyle birden çok iddiayı tek seferde kaydet")
+    s.add_argument("--run", required=True); s.add_argument("--json"); s.add_argument("--stdin", action="store_true")
+    s.set_defaults(fn=cmd_add_claims)
+    s = sub.add_parser("brief", help="lead'in kayıtlı sayfalarından kodla aday alıntı özeti çıkar")
+    s.add_argument("--run", required=True); s.add_argument("--lead", required=True)
+    s.add_argument("--extra", nargs="*", help="ek snapshot id'leri (ör. şikayet sayfaları)"); s.set_defaults(fn=cmd_brief)
+    s = sub.add_parser("repair-snapshots", help="satır sonu düzeltmesinden önce kaydedilen sayfaları, "
+                       "değişmedikleri kanıtlanırsa yeniden kaydet")
+    s.add_argument("--run", required=True); s.set_defaults(fn=cmd_repair_snapshots)
     s = sub.add_parser("retract-claim", help="iddiayı geri çek (silinmez, alıntılanamaz olur)")
     s.add_argument("id"); s.add_argument("--reason", required=True); s.add_argument("--run"); s.add_argument("--product")
     s.set_defaults(fn=cmd_retract_claim)
@@ -404,8 +559,8 @@ def main(argv=None):
         args.fn(args)
 
 
-_MUTATING = {"add-lead", "select", "add-claim", "retract-claim", "verify", "add-draft", "set-review", "score",
-             "export", "state"}
+_MUTATING = {"add-lead", "select", "add-claim", "add-claims", "retract-claim", "verify", "add-draft", "set-review",
+             "score", "export", "state", "promote", "repair-snapshots"}
 
 
 if __name__ == "__main__":

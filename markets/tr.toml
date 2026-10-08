@@ -57,8 +57,45 @@ detail_href = '^/[a-z0-9-]+/[a-z0-9-]+$'
 exclude_href_prefixes = ["/uye/"]
 date_regex = '\d{1,2} (Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)( \d{4})?'
 
+# Rehber kaynakları: "kim var" sorusunun cevabı (ad, büyüklük, web sitesi). Büyüklük sadece
+# ön eleme ipucudur; kanıt yine şirketin kendi sitesinden alınır.
+# 27.09.2026: robots.txt izinli. UFRAD ve BUYSAD'da kullanım şartları sayfası bulunamadı;
+# Vikipedi içeriği CC BY-SA. İYSAD (iysad.com) robots.txt ile yasak, kullanılmıyor.
+[[discovery.listings]]
+id = "ufrad-restoran"
+kind = "directory"
+url = "https://ufrad.org/portfolio_category/restoran/"
+pages = 4
+page_template = "{url}page/{n}/"
+follow_href = '^https://ufrad\.org/[a-z0-9-]+/$'
+max_profiles = 80
+unit = "şube"
+name_regex = 'Marka Adı:\s*(.+?)\s+Adres:'
+count_regex = 'Yurtiçi Şube Sayısı\s*:\s*([\d.]+)'
+website_regex = 'İnternet Sitesi\s+((?:https?://)?[\w.-]+\.[a-z]{2,}[\w./-]*)'
+
+[[discovery.listings]]
+id = "vikipedi-restoran-zincirleri"
+kind = "directory"
+url = "https://tr.wikipedia.org/wiki/T%C3%BCrkiye%27deki_restoran_zincirleri_listesi"
+item_css = "table.wikitable tr"
+unit = "restoran"
+name_css = "td:nth-child(1)"
+count_css = "td:nth-child(7)"
+
+[[discovery.listings]]
+id = "buysad-uyeler"
+kind = "directory"
+url = "https://www.buysad.org.tr/uyelerimiz/"
+item_css = "div.wpb_text_column"
+unit = "günlük öğün"
+name_css = ["h4", "p strong"]
+count_regex = '([\d.]+)\s*(?:yemek|öğün|kişilik yemek)\s*/\s*gün'
+website_regex = '((?:https?://|www\.)[\w.-]+\.[a-z]{2,}(?:\.[a-z]{2})?)'
+
 [sources]
 review_sites = ["sikayetvar.com", "eksisozluk.com"]
+robots_blocked_directories = ["iysad.com"]
 
 excluded = [
   { domain = "yemeksepeti.com", reason = "Kullanım şartları: izinsiz ticari/reklam amaçlı kullanım yasak" },

@@ -39,6 +39,8 @@ _LANG_PREFIX = re.compile(r"^(tr|en|de|ar|ru|fr)$")
 def classify(url: str) -> str | None:
     """The section (first real path segment) decides first: /blog/kurumsal-ziyafetler is press, not about."""
     segments = [s for s in urlparse(url).path.lower().split("/") if s]
+    if any(re.search(r"cerez|cookie|kvkk|gizlilik|privacy|aydinlatma", s) for s in segments):
+        return None  # legal/cookie pages ("cerez-uyari-yonetim-paneli") are not team or about pages
     if segments and _LANG_PREFIX.match(segments[0]):
         segments = segments[1:]
     if not segments:
@@ -115,6 +117,34 @@ def _base_spider():
     return _Polite
 
 
+_PARKED = re.compile(r"suspendedpage|account[-_ ]suspended|domain[-_ ]?(is )?for[-_ ]sale|parkingcrew|sedoparking", re.I)
+_MAINTENANCE = re.compile(r"/maintenance|/bakim|bakımdayız|under maintenance", re.I)
+
+
+def site_unreachable(home: str) -> tuple[str | None, str]:
+    """Return (problem, base_url). A broken TLS certificate falls back to plain http, as a browser user would."""
+    from scrapling.fetchers import Fetcher
+
+    base = home
+    try:
+        page = Fetcher.get(home, timeout=20, retries=1)
+    except Exception as e:
+        if not re.search(r"certificate|ssl", f"{type(e).__name__} {e}", re.I):
+            kind = "alan adı çözümlenemiyor (site kapanmış olabilir)" if "resolve host" in str(e) else "bağlantı kurulamadı"
+            return f"site erişilemiyor: {kind} ({type(e).__name__})", home
+        base = home.replace("https://", "http://", 1)
+        try:
+            page = Fetcher.get(base, timeout=20, retries=1)
+        except Exception as e2:
+            return f"site erişilemiyor: SSL sertifikası geçersiz, http de çalışmıyor ({type(e2).__name__})", home
+    head = page.url + " " + _visible_text(page)[:500]
+    if _PARKED.search(head):
+        return "site erişilemiyor: hosting askıya alınmış ya da alan adı park edilmiş", base
+    if _MAINTENANCE.search(head):
+        return "site şu an bakımda", base
+    return None, base
+
+
 def crawl_site(domain: str, snap_dir: Path, max_pages: int = 25, excluded: list[dict] | None = None) -> dict:
     """Map a company's site and store evidence-bearing pages as snapshots."""
     _silence_scrapling_logs()
@@ -125,6 +155,9 @@ def crawl_site(domain: str, snap_dir: Path, max_pages: int = 25, excluded: list[
     home = f"https://{domain}/"
     if reason := excluded_reason(home, excluded):
         return {"domain": domain, "error": f"hariç tutulan kaynak: {reason}", "pages": []}
+    problem, home = site_unreachable(home)  # directories go stale: dead domains must be reported, not skipped silently
+    if problem:
+        return {"domain": domain, "error": problem, "pages": [], "failed": [], "blocked": []}
     snap_dir.mkdir(parents=True, exist_ok=True)
     chrome = find_chrome()
 
@@ -157,7 +190,11 @@ def crawl_site(domain: str, snap_dir: Path, max_pages: int = 25, excluded: list[
             # homepage (or any HTML reached through parse): save it and harvest internal links
             async for item in self._save(response, "home"):
                 yield item
-            links = LinkExtractor(allow_domains=domain).extract(response)
+            try:
+                links = LinkExtractor(allow_domains=domain).extract(response)
+            except Exception as e:  # malformed markup: keep going with the sitemap alone
+                self.failed.append({"url": url, "error": f"link çıkarılamadı: {type(e).__name__}"})
+                links = []
             self.link_entries += [(u, "") for u in links]
             for req in self._schedule(self.link_entries):
                 yield req
@@ -185,10 +222,20 @@ def crawl_site(domain: str, snap_dir: Path, max_pages: int = 25, excluded: list[
             async for item in self._save(response, response.meta.get("type")):
                 yield item
 
+        async def on_error(self, request, error):
+            self.failed.append({"url": request.url, "error": f"{type(error).__name__}: {str(error).splitlines()[0][:150]}"})
+
         async def _save(self, response, type_):
             if not 200 <= response.status < 300:
                 self.failed.append({"url": response.url, "status": response.status, "type": type_})
                 return
+            try:
+                async for item in self._store(response, type_):
+                    yield item
+            except Exception as e:  # one malformed page must not end the crawl
+                self.failed.append({"url": response.url, "type": type_, "error": f"{type(e).__name__}: {str(e)[:150]}"})
+
+        async def _store(self, response, type_):
             text = _visible_text(response)
             on_http = response.meta.get("_via") != "browser"
             if len(text) < USABLE_CHARS and on_http:  # JS-rendered page: render it, don't give up
@@ -216,8 +263,49 @@ def crawl_site(domain: str, snap_dir: Path, max_pages: int = 25, excluded: list[
             "robots_disallowed": result.stats.robots_disallowed_count}
 
 
+_INT = re.compile(r"\d[\d.]*")
+
+
+def _count(raw: str) -> int | None:
+    m = _INT.search(raw or "")
+    return int(m.group(0).replace(".", "")) if m else None
+
+
+def _field(node, text: str, lst: dict, name: str) -> str:
+    """A directory field comes from a CSS selector (`<name>_css`) or a regex over the item text (`<name>_regex`)."""
+    if css := lst.get(f"{name}_css"):
+        for selector in [css] if isinstance(css, str) else css:  # alternatives, tried in order
+            for hit in node.css(selector):
+                value = " ".join(hit.get_all_text(strip=True).split())
+                if value and not value.endswith(":"):              # skip labels like "Adres:"
+                    return value
+        return ""
+    if pattern := lst.get(f"{name}_regex"):
+        m = re.search(pattern, text)
+        return m.group(1).strip() if m else ""
+    return ""
+
+
+def directory_entry(node, lst: dict, url: str) -> dict | None:
+    text = " ".join(node.get_all_text(strip=True).split())
+    name = re.sub(r"\s*\[\s*\d+\s*\]", "", _field(node, text, lst, "name")).strip()  # drop wiki footnotes
+    if not name:
+        return None
+    count_raw = _field(node, text, lst, "count")
+    website = _field(node, text, lst, "website").rstrip(".,;)")
+    if website and not website.startswith("http"):
+        website = "https://" + website
+    return {"entity": name, "source": lst["id"], "url": url, "count": _count(count_raw), "count_text": count_raw,
+            "unit": lst.get("unit", "şube"), "website": website, "domain": _domain(website) if website else ""}
+
+
 def discover(listings: list[dict], excluded: list[dict] | None = None) -> dict:
-    """Walk catalog listing pages; group items by the entity (company) they mention."""
+    """Walk catalog listing pages.
+
+    - complaint-style listings (`entity_href`): group dated items by the company they mention;
+    - directory listings (`kind = "directory"`): one entry per company with name, size and website,
+      read from table rows / blocks (`item_css`) or from profile pages linked from the list (`follow_href`).
+    """
     _silence_scrapling_logs()
     from scrapling.fetchers import FetcherSession
 
@@ -229,10 +317,22 @@ def discover(listings: list[dict], excluded: list[dict] | None = None) -> dict:
         param = lst.get("page_param", "page")
         sep = "&" if "?" in lst["url"] else "?"
         for n in range(1, int(lst.get("pages", 1)) + 1):
-            starts.append((lst["url"] if n == 1 else f"{lst['url']}{sep}{param}={n}", lst))
+            if n == 1:
+                page_url = lst["url"]
+            elif template := lst.get("page_template"):   # e.g. "{url}page/{n}/"
+                page_url = template.format(url=lst["url"], n=n)
+            else:
+                page_url = f"{lst['url']}{sep}{param}={n}"
+            starts.append((page_url, lst))
 
     by_id = {lst["id"]: lst for _, lst in starts}
     found: dict[str, dict] = {}
+    directory: dict[str, dict] = {}
+
+    def _keep(entry):
+        key = re.sub(r"\W+", "", entry["entity"].lower())
+        if key and (key not in directory or (entry["count"] and not directory[key]["count"])):
+            directory[key] = entry
 
     class ListingSpider(_base_spider()):
         name = "discover"
@@ -247,9 +347,29 @@ def discover(listings: list[dict], excluded: list[dict] | None = None) -> dict:
             for url, lst in starts:
                 yield Request(url, sid="http", meta={"listing": lst["id"]})
 
+        async def parse_profile(self, response):
+            lst = by_id.get(response.meta.get("listing"))
+            if lst and (entry := directory_entry(response, lst, response.url)):
+                _keep(entry)
+            if False:
+                yield {}
+
         async def parse(self, response):
+            from scrapling.spiders import Request
+
             lst = by_id.get(response.meta.get("listing"))
             if lst is None:
+                return
+            if lst.get("kind") == "directory":
+                if follow := lst.get("follow_href"):
+                    follow_re = re.compile(follow)
+                    links = dict.fromkeys(urljoin(response.url, h) for h in response.css("a::attr(href)").getall() if h)
+                    for link in [l for l in links if follow_re.match(l)][: int(lst.get("max_profiles", 200))]:
+                        yield Request(link, sid="http", callback=self.parse_profile, meta={"listing": lst["id"]})
+                else:
+                    for node in response.css(lst["item_css"]):
+                        if entry := directory_entry(node, lst, response.url):
+                            _keep(entry)
                 return
             entity_re = re.compile(lst["entity_href"])
             detail_re = re.compile(lst["detail_href"])
@@ -279,4 +399,5 @@ def discover(listings: list[dict], excluded: list[dict] | None = None) -> dict:
     spider.start()
     candidates = sorted(({**v, "sources": sorted(v["sources"]), "count": len(v["items"])} for v in found.values()),
                         key=lambda c: -c["count"])
-    return {"candidates": candidates, "blocked": spider.blocked, "skipped_listings": skipped}
+    return {"candidates": candidates, "directory": sorted(directory.values(), key=lambda e: e["entity"]),
+            "blocked": spider.blocked, "skipped_listings": skipped}

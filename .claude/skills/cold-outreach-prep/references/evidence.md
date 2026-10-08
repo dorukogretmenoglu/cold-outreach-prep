@@ -29,7 +29,8 @@ there is no "probably".
 | `job_post` | Any | Content ≤ 60 days |
 | `news` | Any | Content ≤ 365 days |
 | `review`, `public_post` | Any | Content ≤ 180 days |
-| `disqualifier` | Any | Snapshot ≤ 30 days |
+| `disqualifier` | Any | Snapshot ≤ 30 days. Only when the evidence meets a profile exclusion **as written** |
+| `vendor_reference` | Any (usually the vendor's customer page) | Snapshot ≤ 30 days. "X uses product Y" that does not meet an exclusion; informational, not scored |
 | `product_fact` | Seller's own doc or product website | None |
 | `case_study` | Any | Snapshot ≤ 180 days |
 | `competitor_fact` | Any | Snapshot ≤ 30 days |

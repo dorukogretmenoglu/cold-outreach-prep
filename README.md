@@ -5,6 +5,14 @@ signal for your product, researches them and the right decision maker, scores th
 personalised first message. **Every fact in a message is backed by a verbatim quote from a saved
 source, checked by code and then by an independent agent. It never sends anything.**
 
+<p align="center">
+  <img src="docs/how-it-works.png" width="800"
+       alt="Ten steps from finding leads to you sending, marked as code, model or you. Below, real verifier output on a fictional page: a quote found on the page is verified; a growth target recorded as a branch count, a guessed email and an invented quote are rejected.">
+</p>
+
+The terminal shows real verifier output on a fictional Turkish page. The error messages are the
+tool's own (in Turkish); the handwritten labels translate them.
+
 ## Why evidence-first
 
 One wrong fact in a cold message (an old price, the wrong company, an invented statistic) ends
